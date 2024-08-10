@@ -1,0 +1,6 @@
+mido
+pydub
+scipy
+librosa
+numpy
+soundfile
