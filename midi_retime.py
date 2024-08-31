@@ -37,7 +37,7 @@ def calculate_overlap(notes_a, notes_b):
                 end = min(note_a[2], note_b[2])
                 if start < end:
                     overlap += end - start
-    return overlap, total_area - overlap
+    return overlap / total_area if total_area > 0 else 0
 
 
 def stretch_notes(notes, start_time, end_time, stretch_factor):
@@ -61,70 +61,55 @@ def stretch_notes(notes, start_time, end_time, stretch_factor):
 def optimize_stretch(notes_a, notes_b, start_time, end_time):
     def objective(stretch_factor):
         stretched_notes_b = stretch_notes(notes_b, start_time, end_time, stretch_factor)
-        _, non_overlap = calculate_overlap(notes_a, stretched_notes_b)
-        return non_overlap
+        overlap = calculate_overlap(notes_a, stretched_notes_b)
+        return -overlap  # We want to maximize overlap, so we minimize negative overlap
 
     result = minimize_scalar(objective, bounds=(0.5, 2.0), method='bounded')
     return result.x
 
 
-def align_midi_recursive(notes_a, notes_b, start_time, end_time, min_subdivision=4, depth=0):
-    global iteration_count, total_iterations, start_time_global
+def align_midi_dynamic(notes_a, notes_b, min_subdivision=1, max_iterations=100):
+    end_time = max(max(note[2] for note in notes_a), max(note[2] for note in notes_b))
+    stretches = []
+    current_time = 0
+    iteration = 0
 
-    if end_time - start_time <= min_subdivision:
-        iteration_count += 1
-        stretch_factor = optimize_stretch(notes_a, notes_b, start_time, end_time)
-        stretched_notes_b = stretch_notes(notes_b, start_time, end_time, stretch_factor)
-        _, non_overlap = calculate_overlap(notes_a, stretched_notes_b)
+    while current_time < end_time and iteration < max_iterations:
+        next_time = min(current_time + min_subdivision, end_time)
+        stretch_factor = optimize_stretch(notes_a, notes_b, current_time, next_time)
+        stretches.append((current_time, next_time, stretch_factor))
+        current_time = next_time
+        iteration += 1
 
-        elapsed_time = time.time() - start_time_global
-        eta = (elapsed_time / iteration_count) * (total_iterations - iteration_count)
+        print(f"\rProgress: {current_time/end_time*100:.2f}% Complete", end="", flush=True)
 
-        print(f"\rProgress: {iteration_count}/{total_iterations} " +
-              f"({iteration_count / total_iterations * 100:.2f}%) " +
-              f"Current Loss: {non_overlap:.2f} " +
-              f"ETA: {eta:.2f}s", end="", flush=True)
-
-        return stretch_factor
-
-    mid_time = (start_time + end_time) / 2
-    left_stretch = align_midi_recursive(notes_a, notes_b, start_time, mid_time, min_subdivision, depth + 1)
-    right_stretch = align_midi_recursive(notes_a, notes_b, mid_time, end_time, min_subdivision, depth + 1)
-
-    return [left_stretch, right_stretch]
+    print("\nAlignment complete!")
+    return stretches
 
 
-def apply_stretching(notes, stretches, start_time, end_time, min_subdivision=4):
-    if isinstance(stretches, float):
-        return stretch_notes(notes, start_time, end_time, stretches)
-
-    mid_time = (start_time + end_time) / 2
-    left_notes = apply_stretching(notes, stretches[0], start_time, mid_time, min_subdivision)
-    right_notes = apply_stretching(notes, stretches[1], mid_time, end_time, min_subdivision)
-
-    return left_notes + right_notes
-
-
-def stretch_audio(audio_path, stretches, start_time, end_time, min_subdivision=4):
-    y, sr = librosa.load(audio_path)
-
-    if isinstance(stretches, float):
-        return pyrb.time_stretch(y[int(start_time * sr):int(end_time * sr)], sr, stretches)
-
-    mid_time = (start_time + end_time) / 2
-    left_audio = stretch_audio(audio_path, stretches[0], start_time, mid_time, min_subdivision)
-    right_audio = stretch_audio(audio_path, stretches[1], mid_time, end_time, min_subdivision)
-
-    return np.concatenate((left_audio, right_audio))
+def apply_stretching(notes, stretches):
+    stretched_notes = []
+    for note in notes:
+        new_start = note[1]
+        new_end = note[2]
+        for start, end, factor in stretches:
+            if start <= new_start < end:
+                new_start = start + (new_start - start) * factor
+            if start < new_end <= end:
+                new_end = start + (new_end - start) * factor
+        stretched_notes.append((note[0], new_start, new_end))
+    return stretched_notes
 
 
-def estimate_total_iterations(start_time, end_time, min_subdivision):
-    if end_time - start_time <= min_subdivision:
-        return 1
-    mid_time = (start_time + end_time) / 2
-    return 1 + estimate_total_iterations(start_time, mid_time, min_subdivision) + estimate_total_iterations(mid_time,
-                                                                                                            end_time,
-                                                                                                            min_subdivision)
+def stretch_audio(y, sr, stretches):
+    stretched_audio = []
+    for start, end, factor in stretches:
+        start_sample = int(start * sr)
+        end_sample = int(end * sr)
+        segment = y[start_sample:end_sample]
+        stretched_segment = pyrb.time_stretch(segment, sr, factor)
+        stretched_audio.append(stretched_segment)
+    return np.concatenate(stretched_audio)
 
 
 def plot_midi_notes(notes_a, notes_b, stretched_notes_b, output_path):
@@ -150,24 +135,14 @@ def plot_midi_notes(notes_a, notes_b, stretched_notes_b, output_path):
     print(f"Note visualization saved to {output_path}")
 
 
-def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path):
-    global iteration_count, total_iterations, start_time_global
-
+def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path, test_mode=False):
     notes_a = load_midi(midi_a_path)
     notes_b = load_midi(midi_b_path)
 
-    end_time = max(max(note[2] for note in notes_a), max(note[2] for note in notes_b))
-    min_subdivision = 4
-
-    total_iterations = estimate_total_iterations(0, end_time, min_subdivision)
-    iteration_count = 0
-    start_time_global = time.time()
-
     print("Starting alignment process...")
-    stretches = align_midi_recursive(notes_a, notes_b, 0, end_time, min_subdivision)
-    print("\nAlignment complete!")
+    stretches = align_midi_dynamic(notes_a, notes_b)
 
-    stretched_notes_b = apply_stretching(notes_b, stretches, 0, end_time)
+    stretched_notes_b = apply_stretching(notes_b, stretches)
 
     # Create a new MIDI file with stretched notes
     new_midi = mido.MidiFile()
@@ -176,7 +151,6 @@ def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path
 
     current_time = 0
     for note in stretched_notes_b:
-        # Ensure note timings are non-negative
         note_on_time = max(0, int((note[1] - current_time) * 1000))
         note_duration = max(0, int((note[2] - note[1]) * 1000))
 
@@ -188,26 +162,75 @@ def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path
     new_midi.save(output_midi_path)
     print(f"Stretched MIDI saved to {output_midi_path}")
 
-    # Stretch the MP3 file
-    print("Stretching MP3 file...")
-    y, sr = librosa.load(mp3_c_path)
-    stretched_audio = stretch_audio(mp3_c_path, stretches, 0, end_time)
-    sf.write(output_mp3_path, stretched_audio, sr)
-    print(f"Stretched MP3 saved to {output_mp3_path}")
+    if not test_mode:
+        # Stretch the MP3 file
+        print("Stretching MP3 file...")
+        y, sr = librosa.load(mp3_c_path)
+        stretched_audio = stretch_audio(y, sr, stretches)
+        sf.write(output_mp3_path, stretched_audio, sr)
+        print(f"Stretched MP3 saved to {output_mp3_path}")
 
     # Generate note visualization
     print("Generating note visualization...")
     plot_midi_notes(notes_a, notes_b, stretched_notes_b, 'note_visualization.jpg')
 
 
+def test_midi_alignment():
+    # Create two test MIDI files
+    midi_a = mido.MidiFile()
+    track_a = mido.MidiTrack()
+    midi_a.tracks.append(track_a)
+
+    midi_b = mido.MidiFile()
+    track_b = mido.MidiTrack()
+    midi_b.tracks.append(track_b)
+
+    # Add notes to MIDI A
+    for i in range(10):
+        track_a.append(mido.Message('note_on', note=60+i, velocity=64, time=1000))
+        track_a.append(mido.Message('note_off', note=60+i, velocity=64, time=1000))
+
+    # Add similar but slightly offset notes to MIDI B
+    for i in range(10):
+        track_b.append(mido.Message('note_on', note=60+i, velocity=64, time=1100))
+        track_b.append(mido.Message('note_off', note=60+i, velocity=64, time=900))
+
+    # Save test MIDI files
+    midi_a.save('test_midi_a.mid')
+    midi_b.save('test_midi_b.mid')
+
+    # Run alignment
+    main('test_midi_a.mid', 'test_midi_b.mid', 'dummy.mp3', 'test_output.mid', 'test_output.mp3', test_mode=True)
+
+    # Load and compare the original and aligned MIDI files
+    notes_a = load_midi('test_midi_a.mid')
+    notes_b_original = load_midi('test_midi_b.mid')
+    notes_b_aligned = load_midi('test_output.mid')
+
+    overlap_before = calculate_overlap(notes_a, notes_b_original)
+    overlap_after = calculate_overlap(notes_a, notes_b_aligned)
+
+    print(f"Overlap before alignment: {overlap_before:.2f}")
+    print(f"Overlap after alignment: {overlap_after:.2f}")
+
+    assert overlap_after > overlap_before, "Alignment did not improve overlap"
+    print("Test passed: Alignment improved overlap between MIDI files")
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Align and stretch MIDI and MP3 files.')
-    parser.add_argument('midi_a', help='Path to the first MIDI file (A)')
-    parser.add_argument('midi_b', help='Path to the second MIDI file (B)')
-    parser.add_argument('mp3_c', help='Path to the MP3 file (C)')
-    parser.add_argument('output_midi', help='Path for the output stretched MIDI file')
-    parser.add_argument('output_mp3', help='Path for the output stretched MP3 file')
+    import sys
+    
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser(description='Align and stretch MIDI and MP3 files.')
+        parser.add_argument('midi_a', help='Path to the first MIDI file (A)')
+        parser.add_argument('midi_b', help='Path to the second MIDI file (B)')
+        parser.add_argument('mp3_c', help='Path to the MP3 file (C)')
+        parser.add_argument('output_midi', help='Path for the output stretched MIDI file')
+        parser.add_argument('output_mp3', help='Path for the output stretched MP3 file')
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
-    main(args.midi_a, args.midi_b, args.mp3_c, args.output_midi, args.output_mp3)
+        main(args.midi_a, args.midi_b, args.mp3_c, args.output_midi, args.output_mp3)
+    else:
+        print("Running test...")
+        test_midi_alignment()
