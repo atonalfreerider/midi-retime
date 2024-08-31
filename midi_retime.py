@@ -5,6 +5,7 @@ import numpy as np
 import soundfile as sf
 from scipy.optimize import minimize_scalar
 from pyrubberband import pyrb
+import matplotlib.pyplot as plt
 import time
 
 
@@ -126,6 +127,29 @@ def estimate_total_iterations(start_time, end_time, min_subdivision):
                                                                                                             min_subdivision)
 
 
+def plot_midi_notes(notes_a, notes_b, stretched_notes_b, output_path):
+    plt.figure(figsize=(20, 10))
+
+    for note in notes_a:
+        plt.plot([note[1], note[2]], [note[0], note[0]], color='blue', linewidth=2, alpha=0.7)
+
+    for note in notes_b:
+        plt.plot([note[1], note[2]], [note[0], note[0]], color='magenta', linewidth=2, alpha=0.5)
+
+    for note in stretched_notes_b:
+        plt.plot([note[1], note[2]], [note[0], note[0]], color='green', linewidth=2, alpha=0.5)
+
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Note Pitch')
+    plt.title('MIDI Note Alignment Visualization')
+    plt.legend(['MIDI A', 'MIDI B (Unstretched)', 'MIDI B (Stretched)'])
+    plt.grid(True, which='both', linestyle='--', color='gray', alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    print(f"Note visualization saved to {output_path}")
+
+
 def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path):
     global iteration_count, total_iterations, start_time_global
 
@@ -170,6 +194,10 @@ def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path
     stretched_audio = stretch_audio(mp3_c_path, stretches, 0, end_time)
     sf.write(output_mp3_path, stretched_audio, sr)
     print(f"Stretched MP3 saved to {output_mp3_path}")
+
+    # Generate note visualization
+    print("Generating note visualization...")
+    plot_midi_notes(notes_a, notes_b, stretched_notes_b, 'note_visualization.jpg')
 
 
 if __name__ == "__main__":
