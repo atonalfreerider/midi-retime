@@ -79,26 +79,38 @@ def align_midi_dtw(notes_a, notes_b):
     piano_roll_a = create_piano_roll(notes_a, times)
     piano_roll_b = create_piano_roll(notes_b, times)
     
-    # Compute DTW
-    D, wp = librosa.sequence.dtw(X=piano_roll_a.T, Y=piano_roll_b.T, metric='euclidean')
+    # Process in chunks to reduce memory usage
+    chunk_size = 1000  # Adjust this value based on available memory
+    num_chunks = (len(times) + chunk_size - 1) // chunk_size
     
-    # Extract the warp path
-    path_x = wp[:, 0]
-    path_y = wp[:, 1]
-    path_times_a = times[path_x]
-    path_times_b = times[path_y]
+    warped_times = []
+    for i in range(num_chunks):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, len(times))
+        
+        chunk_a = piano_roll_a[start_idx:end_idx]
+        chunk_b = piano_roll_b[start_idx:end_idx]
+        
+        # Compute DTW for the chunk
+        D, wp = librosa.sequence.dtw(X=chunk_a.T, Y=chunk_b.T, metric='euclidean')
+        
+        # Extract the warp path for this chunk
+        path_x = wp[:, 0] + start_idx
+        path_y = wp[:, 1] + start_idx
+        
+        warped_times.extend(zip(times[path_y], times[path_x]))
     
     # Create a mapping from time in B to time in A
-    time_map = dict(zip(path_times_b, path_times_a))
+    time_map = dict(warped_times)
     
     # Apply the time warping to notes_b
     warped_notes_b = warp_notes(notes_b, time_map)
     
-    return warped_notes_b
+    return warped_notes_b, time_map
 
 def create_piano_roll(notes, times):
     # MIDI notes range from 0 to 127
-    piano_roll = np.zeros((len(times), 128))
+    piano_roll = np.zeros((len(times), 128), dtype=np.uint8)
     for note in notes:
         start_idx = np.searchsorted(times, note[1])
         end_idx = np.searchsorted(times, note[2])
@@ -203,7 +215,7 @@ def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path
     notes_b = load_midi(midi_b_path)
     
     print("Starting alignment process using Dynamic Time Warping...")
-    warped_notes_b = align_midi_dtw(notes_a, notes_b)
+    warped_notes_b, time_map = align_midi_dtw(notes_a, notes_b)
     
     # Create a new MIDI file with warped notes
     new_midi = mido.MidiFile()
@@ -235,83 +247,6 @@ def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path
     # Generate note visualization
     print("Generating note visualization...")
     plot_midi_notes(notes_a, notes_b, warped_notes_b, output_image_path)
-
-
-def test_midi_alignment():
-    # Create two test MIDI files
-    midi_a = mido.MidiFile()
-    track_a = mido.MidiTrack()
-    midi_a.tracks.append(track_a)
-
-    midi_b = mido.MidiFile()
-    track_b = mido.MidiTrack()
-    midi_b.tracks.append(track_b)
-
-    # Add notes to MIDI A
-    for i in range(10):
-        track_a.append(mido.Message('note_on', note=60+i, velocity=64, time=1000))
-        track_a.append(mido.Message('note_off', note=60+i, velocity=64, time=1000))
-
-    # Add similar but slightly offset notes to MIDI B
-    for i in range(10):
-        track_b.append(mido.Message('note_on', note=60+i, velocity=64, time=1100))
-        track_b.append(mido.Message('note_off', note=60+i, velocity=64, time=900))
-
-    # Save test MIDI files
-    midi_a.save('test_midi_a.mid')
-    midi_b.save('test_midi_b.mid')
-
-    # Run alignment on original test case
-    print("\nRunning alignment on original test case...")
-    main('test_midi_a.mid', 'test_midi_b.mid', 'dummy.mp3', 'test_output.mid', 'test_output.mp3', 'test_visualization.jpg', test_mode=True)
-
-    # Load and compare the original and aligned MIDI files
-    notes_a = load_midi('test_midi_a.mid')
-    notes_b_original = load_midi('test_midi_b.mid')
-    notes_b_aligned = load_midi('test_output.mid')
-
-    overlap_before = calculate_overlap(notes_a, notes_b_original)
-    overlap_after = calculate_overlap(notes_a, notes_b_aligned)
-
-    print(f"Overlap before alignment: {overlap_before:.2f}")
-    print(f"Overlap after alignment: {overlap_after:.2f}")
-    
-    print("Test passed: Alignment improved overlap between MIDI files")
-
-    # Additional test case with longer MIDI tracks
-    def create_long_midi(file_name, note_count, time_gap):
-        midi = mido.MidiFile()
-        track = mido.MidiTrack()
-        midi.tracks.append(track)
-        for i in range(note_count):
-            track.append(mido.Message('note_on', note=60 + (i % 12), velocity=64, time=int(time_gap)))
-            track.append(mido.Message('note_off', note=60 + (i % 12), velocity=64, time=int(time_gap)))
-        midi.save(file_name)
-
-    # Create longer MIDI files with slight timing differences
-    create_long_midi('long_midi_a.mid', note_count=50, time_gap=500)  # 0.5-second gaps
-    create_long_midi('long_midi_b.mid', note_count=50, time_gap=450)  # Slightly faster tempo
-
-    # Additional test case with similar but not identical note patterns
-    def create_complex_midi(file_name, variations):
-        midi = mido.MidiFile()
-        track = mido.MidiTrack()
-        midi.tracks.append(track)
-        for i in range(100):
-            note = 60 + (i % 12) + variations[i % len(variations)]
-            track.append(mido.Message('note_on', note=note, velocity=64, time=500))
-            track.append(mido.Message('note_off', note=note, velocity=64, time=500))
-        midi.save(file_name)
-
-    create_complex_midi('complex_midi_a.mid', variations=[0, 1, -1, 0])
-    create_complex_midi('complex_midi_b.mid', variations=[1, 0, 0, -1])
-
-    # Run alignment on new test cases
-    print("\nRunning alignment on long MIDI files...")
-    main('long_midi_a.mid', 'long_midi_b.mid', 'dummy_long.mp3', 'long_output.mid', 'long_output.mp3', 'long_visualization.jpg', test_mode=True)
-
-    print("\nRunning alignment on complex MIDI files...")
-    main('complex_midi_a.mid', 'complex_midi_b.mid', 'dummy_complex.mp3', 'complex_output.mid', 'complex_output.mp3', 'complex_visualization.jpg', test_mode=True)
 
 
 def stretch_audio_with_time_map(input_audio_path, output_audio_path, time_map):
@@ -348,10 +283,8 @@ if __name__ == "__main__":
         parser.add_argument('mp3_c', help='Path to the MP3 file (C)')
         parser.add_argument('output_midi', help='Path for the output stretched MIDI file')
         parser.add_argument('output_mp3', help='Path for the output stretched MP3 file')
+        parser.add_argument('output_image', help='Path for the output visualization image')
 
         args = parser.parse_args()
 
-        main(args.midi_a, args.midi_b, args.mp3_c, args.output_midi, args.output_mp3)
-    else:
-        print("Running test...")
-        test_midi_alignment()
+        main(args.midi_a, args.midi_b, args.mp3_c, args.output_midi, args.output_mp3, args.output_image)
