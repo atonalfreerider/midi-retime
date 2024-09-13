@@ -6,6 +6,7 @@ import soundfile as sf
 from scipy.optimize import minimize_scalar
 from pyrubberband import pyrb
 import matplotlib.pyplot as plt
+import librosa.display
 
 
 def load_midi(file_path):
@@ -68,44 +69,67 @@ def optimize_stretch(notes_a, notes_b, start_time, end_time):
     return result.x
 
 
-def align_midi_dynamic(notes_a, notes_b, min_subdivision=0.5, max_iterations=200):
+def align_midi_dtw(notes_a, notes_b):
+    # Create time grids for both MIDI files
     end_time = max(max(note[2] for note in notes_a), max(note[2] for note in notes_b))
-    stretches = []
-    current_time = 0
-    iteration = 0
+    time_step = 0.05  # 50 milliseconds
+    times = np.arange(0, end_time, time_step)
+    
+    # Create piano roll representations
+    piano_roll_a = create_piano_roll(notes_a, times)
+    piano_roll_b = create_piano_roll(notes_b, times)
+    
+    # Compute DTW
+    D, wp = librosa.sequence.dtw(X=piano_roll_a.T, Y=piano_roll_b.T, metric='euclidean')
+    
+    # Extract the warp path
+    path_x = wp[:, 0]
+    path_y = wp[:, 1]
+    path_times_a = times[path_x]
+    path_times_b = times[path_y]
+    
+    # Create a mapping from time in B to time in A
+    time_map = dict(zip(path_times_b, path_times_a))
+    
+    # Apply the time warping to notes_b
+    warped_notes_b = warp_notes(notes_b, time_map)
+    
+    return warped_notes_b
 
-    while current_time < end_time and iteration < max_iterations:
-        next_time = min(current_time + min_subdivision, end_time)
-        stretch_factor = optimize_stretch(notes_a, notes_b, current_time, next_time)
-        stretches.append((current_time, next_time, stretch_factor))
-        current_time = next_time
-        iteration += 1
+def create_piano_roll(notes, times):
+    # MIDI notes range from 0 to 127
+    piano_roll = np.zeros((len(times), 128))
+    for note in notes:
+        start_idx = np.searchsorted(times, note[1])
+        end_idx = np.searchsorted(times, note[2])
+        piano_roll[start_idx:end_idx, note[0]] = 1
+    return piano_roll
 
-        print(f"\rProgress: {current_time/end_time*100:.2f}% Complete", end="", flush=True)
+def warp_notes(notes, time_map):
+    warped_notes = []
+    time_steps = sorted(time_map.keys())
+    for note in notes:
+        # Map start and end times using the time_map
+        warped_start = interpolate_time(note[1], time_steps, time_map)
+        warped_end = interpolate_time(note[2], time_steps, time_map)
+        warped_notes.append((note[0], warped_start, warped_end))
+    return warped_notes
 
-    print("\nAlignment complete!")
-
-    # Perform final pass with small increments from the start
-    print("\nStarting fine-tuning alignment with small increments...")
-    best_overlap = calculate_overlap(notes_a, notes_b)
-    best_offset = 0
-    offset_range = np.arange(-1.0, 1.0, 0.1)  # Adjust offsets in range [-1.0, 1.0] seconds
-
-    for offset in offset_range:
-        shifted_notes_b = shift_notes(notes_b, offset)
-        overlap = calculate_overlap(notes_a, shifted_notes_b)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_offset = offset
-            best_shifted_notes_b = shifted_notes_b
-
-    if best_offset != 0:
-        print(f"Applied fine-tuned offset: {best_offset:.1f} seconds. Improved overlap to {best_overlap:.4f}")
-        notes_b = best_shifted_notes_b
+def interpolate_time(time, time_steps, time_map):
+    # Find the closest time steps before and after the time
+    idx = np.searchsorted(time_steps, time)
+    if idx == 0:
+        return time_map[time_steps[0]]
+    elif idx == len(time_steps):
+        return time_map[time_steps[-1]]
     else:
-        print("No improvement found with fine-tuning.")
-
-    return notes_b
+        t_before = time_steps[idx - 1]
+        t_after = time_steps[idx]
+        mapped_t_before = time_map[t_before]
+        mapped_t_after = time_map[t_after]
+        # Linear interpolation
+        proportion = (time - t_before) / (t_after - t_before)
+        return mapped_t_before + proportion * (mapped_t_after - mapped_t_before)
 
 
 def shift_notes(notes, offset):
@@ -140,11 +164,11 @@ def stretch_audio(y, sr, stretches):
     return np.concatenate(stretched_audio)
 
 
-def plot_midi_notes(notes_a, notes_b, stretched_notes_b, output_path):
+def plot_midi_notes(notes_a, notes_b, warped_notes_b, output_path):
     plt.figure(figsize=(20, 10))
-
+    
     # Define vertical offsets for each track
-    offset_a, offset_b, offset_stretched = 0, 0.2, 0.4
+    offset_a, offset_b, offset_warped = 0, 0.2, 0.4
 
     # Plot notes from MIDI A
     for note in notes_a:
@@ -154,9 +178,9 @@ def plot_midi_notes(notes_a, notes_b, stretched_notes_b, output_path):
     for note in notes_b:
         plt.plot([note[1], note[2]], [note[0] + offset_b, note[0] + offset_b], color='magenta', linewidth=2, alpha=0.5)
 
-    # Plot notes from stretched MIDI B
-    for note in stretched_notes_b:
-        plt.plot([note[1], note[2]], [note[0] + offset_stretched, note[0] + offset_stretched], color='green', linewidth=2, alpha=0.5)
+    # Plot notes from warped MIDI B
+    for note in warped_notes_b:
+        plt.plot([note[1], note[2]], [note[0] + offset_warped, note[0] + offset_warped], color='green', linewidth=2, alpha=0.5)
 
     plt.xlabel('Time (seconds)')
     plt.ylabel('Note Pitch')
@@ -164,7 +188,7 @@ def plot_midi_notes(notes_a, notes_b, stretched_notes_b, output_path):
     legend_elements = [
         plt.Line2D([0], [0], color='blue', lw=2, label='MIDI A'),
         plt.Line2D([0], [0], color='magenta', lw=2, label='MIDI B (Original)'),
-        plt.Line2D([0], [0], color='green', lw=2, label='MIDI B (Stretched)')
+        plt.Line2D([0], [0], color='green', lw=2, label='MIDI B (Warped)')
     ]
     plt.legend(handles=legend_elements, loc='upper right')
     plt.grid(True, which='both', linestyle='--', color='gray', alpha=0.5)
@@ -174,42 +198,43 @@ def plot_midi_notes(notes_a, notes_b, stretched_notes_b, output_path):
     print(f"Note visualization saved to {output_path}")
 
 
-def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path, test_mode=False):
+def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path, output_image_path, test_mode=False):
     notes_a = load_midi(midi_a_path)
     notes_b = load_midi(midi_b_path)
-
-    print("Starting alignment process...")
-    stretched_notes_b = align_midi_dynamic(notes_a, notes_b)
-
-    # Create a new MIDI file with stretched notes
+    
+    print("Starting alignment process using Dynamic Time Warping...")
+    warped_notes_b = align_midi_dtw(notes_a, notes_b)
+    
+    # Create a new MIDI file with warped notes
     new_midi = mido.MidiFile()
     track = mido.MidiTrack()
     new_midi.tracks.append(track)
-
+    
+    # Sort notes by start time
+    warped_notes_b.sort(key=lambda x: x[1])
+    
+    # Insert warped notes into the MIDI file
     current_time = 0
-    for note in stretched_notes_b:
-        note_on_time = max(0, int((note[1] - current_time) * 1000))
-        note_duration = max(0, int((note[2] - note[1]) * 1000))
-
-        if note_on_time > 0 or note_duration > 0:
-            track.append(mido.Message('note_on', note=note[0], velocity=64, time=note_on_time))
-            track.append(mido.Message('note_off', note=note[0], velocity=64, time=note_duration))
+    for note in warped_notes_b:
+        delta_time = max(0, int((note[1] - current_time) * 1000))
+        duration = max(0, int((note[2] - note[1]) * 1000))
+        if duration > 0:
+            track.append(mido.Message('note_on', note=note[0], velocity=64, time=delta_time))
+            track.append(mido.Message('note_off', note=note[0], velocity=64, time=duration))
             current_time = note[2]
-
+    
     new_midi.save(output_midi_path)
-    print(f"Stretched MIDI saved to {output_midi_path}")
-
+    print(f"Warped MIDI saved to {output_midi_path}")
+    
     if not test_mode:
-        # Stretch the MP3 file
-        print("Stretching MP3 file...")
-        y, sr = librosa.load(mp3_c_path)
-        stretched_audio = stretch_audio(y, sr, stretches)
-        sf.write(output_mp3_path, stretched_audio, sr)
+        # Stretch the MP3 file using the time map
+        print("Stretching MP3 file according to time warp...")
+        stretch_audio_with_time_map(mp3_c_path, output_mp3_path, time_map)
         print(f"Stretched MP3 saved to {output_mp3_path}")
-
+    
     # Generate note visualization
     print("Generating note visualization...")
-    plot_midi_notes(notes_a, notes_b, stretched_notes_b, 'note_visualization.jpg')
+    plot_midi_notes(notes_a, notes_b, warped_notes_b, output_image_path)
 
 
 def test_midi_alignment():
@@ -236,8 +261,9 @@ def test_midi_alignment():
     midi_a.save('test_midi_a.mid')
     midi_b.save('test_midi_b.mid')
 
-    # Run alignment
-    main('test_midi_a.mid', 'test_midi_b.mid', 'dummy.mp3', 'test_output.mid', 'test_output.mp3', test_mode=True)
+    # Run alignment on original test case
+    print("\nRunning alignment on original test case...")
+    main('test_midi_a.mid', 'test_midi_b.mid', 'dummy.mp3', 'test_output.mid', 'test_output.mp3', 'test_visualization.jpg', test_mode=True)
 
     # Load and compare the original and aligned MIDI files
     notes_a = load_midi('test_midi_a.mid')
@@ -282,10 +308,34 @@ def test_midi_alignment():
 
     # Run alignment on new test cases
     print("\nRunning alignment on long MIDI files...")
-    main('long_midi_a.mid', 'long_midi_b.mid', 'dummy_long.mp3', 'long_output.mid', 'long_output.mp3', test_mode=True)
+    main('long_midi_a.mid', 'long_midi_b.mid', 'dummy_long.mp3', 'long_output.mid', 'long_output.mp3', 'long_visualization.jpg', test_mode=True)
 
     print("\nRunning alignment on complex MIDI files...")
-    main('complex_midi_a.mid', 'complex_midi_b.mid', 'dummy_complex.mp3', 'complex_output.mid', 'complex_output.mp3', test_mode=True)
+    main('complex_midi_a.mid', 'complex_midi_b.mid', 'dummy_complex.mp3', 'complex_output.mid', 'complex_output.mp3', 'complex_visualization.jpg', test_mode=True)
+
+
+def stretch_audio_with_time_map(input_audio_path, output_audio_path, time_map):
+    import soundfile as sf
+    y, sr = librosa.load(input_audio_path)
+    
+    # Generate the time warp function
+    original_times = np.array(sorted(time_map.keys()))
+    warped_times = np.array([time_map[t] for t in original_times])
+    
+    # Create an interpolation function for the time warp
+    from scipy.interpolate import interp1d
+    interp_function = interp1d(warped_times, original_times, kind='linear', fill_value="extrapolate")
+    
+    # Generate the new time indices for the audio signal
+    duration = warped_times[-1]
+    new_times = np.arange(0, duration, 1 / sr)
+    original_times_mapped = interp_function(new_times)
+    
+    # Resample the audio signal
+    warped_audio = np.interp(original_times_mapped, np.arange(len(y)) / sr, y)
+    
+    sf.write(output_audio_path, warped_audio, sr)
+    print(f"Audio stretched and saved to {output_audio_path}")
 
 
 if __name__ == "__main__":
