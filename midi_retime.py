@@ -6,7 +6,6 @@ import soundfile as sf
 from scipy.optimize import minimize_scalar
 from pyrubberband import pyrb
 import matplotlib.pyplot as plt
-import time
 
 
 def load_midi(file_path):
@@ -27,10 +26,11 @@ def load_midi(file_path):
 
 def calculate_overlap(notes_a, notes_b):
     overlap = 0
-    total_area = 0
+    total_duration_a = sum(note[2] - note[1] for note in notes_a)
+    total_duration_b = sum(note[2] - note[1] for note in notes_b)
+    total_area = max(total_duration_a, total_duration_b)
+    
     for note_a in notes_a:
-        note_a_area = note_a[2] - note_a[1]
-        total_area += note_a_area
         for note_b in notes_b:
             if note_a[0] == note_b[0]:  # Same pitch
                 start = max(note_a[1], note_b[1])
@@ -68,7 +68,7 @@ def optimize_stretch(notes_a, notes_b, start_time, end_time):
     return result.x
 
 
-def align_midi_dynamic(notes_a, notes_b, min_subdivision=1, max_iterations=100):
+def align_midi_dynamic(notes_a, notes_b, min_subdivision=0.5, max_iterations=200):
     end_time = max(max(note[2] for note in notes_a), max(note[2] for note in notes_b))
     stretches = []
     current_time = 0
@@ -115,24 +115,36 @@ def stretch_audio(y, sr, stretches):
 def plot_midi_notes(notes_a, notes_b, stretched_notes_b, output_path):
     plt.figure(figsize=(20, 10))
 
+    # Define vertical offsets for each track
+    offset_a, offset_b, offset_stretched = 0, 0.2, 0.4
+
+    # Plot notes from MIDI A
     for note in notes_a:
-        plt.plot([note[1], note[2]], [note[0], note[0]], color='blue', linewidth=2, alpha=0.7)
+        plt.plot([note[1], note[2]], [note[0] + offset_a, note[0] + offset_a], color='blue', linewidth=2, alpha=0.7)
 
+    # Plot notes from original MIDI B
     for note in notes_b:
-        plt.plot([note[1], note[2]], [note[0], note[0]], color='magenta', linewidth=2, alpha=0.5)
+        plt.plot([note[1], note[2]], [note[0] + offset_b, note[0] + offset_b], color='magenta', linewidth=2, alpha=0.5)
 
+    # Plot notes from stretched MIDI B
     for note in stretched_notes_b:
-        plt.plot([note[1], note[2]], [note[0], note[0]], color='green', linewidth=2, alpha=0.5)
+        plt.plot([note[1], note[2]], [note[0] + offset_stretched, note[0] + offset_stretched], color='green', linewidth=2, alpha=0.5)
 
     plt.xlabel('Time (seconds)')
     plt.ylabel('Note Pitch')
     plt.title('MIDI Note Alignment Visualization')
-    plt.legend(['MIDI A', 'MIDI B (Unstretched)', 'MIDI B (Stretched)'])
+    legend_elements = [
+        plt.Line2D([0], [0], color='blue', lw=2, label='MIDI A'),
+        plt.Line2D([0], [0], color='magenta', lw=2, label='MIDI B (Original)'),
+        plt.Line2D([0], [0], color='green', lw=2, label='MIDI B (Stretched)')
+    ]
+    plt.legend(handles=legend_elements, loc='upper right')
     plt.grid(True, which='both', linestyle='--', color='gray', alpha=0.5)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
     print(f"Note visualization saved to {output_path}")
+
 
 
 def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path, test_mode=False):
