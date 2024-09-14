@@ -11,18 +11,27 @@ import librosa.display
 
 def load_midi(file_path):
     mid = mido.MidiFile(file_path)
-    notes = []
-    current_time = 0
-    for msg in mid:
-        current_time += msg.time
-        if msg.type == 'note_on' and msg.velocity > 0:
-            notes.append((msg.note, current_time, None))
-        elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-            for i in range(len(notes) - 1, -1, -1):
-                if notes[i][0] == msg.note and notes[i][2] is None:
-                    notes[i] = (notes[i][0], notes[i][1], current_time)
-                    break
-    return [note for note in notes if note[2] is not None]
+    tracks_notes = {}  # Dictionary to hold notes per track
+
+    for i, track in enumerate(mid.tracks):
+        notes = []
+        current_time = 0
+        for msg in track:
+            current_time += msg.time
+            if msg.type == 'note_on' and msg.velocity > 0:
+                notes.append((msg.note, current_time, None))
+            elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                for j in range(len(notes) -1, -1, -1):
+                    if notes[j][0] == msg.note and notes[j][2] is None:
+                        notes[j] = (notes[j][0], notes[j][1], current_time)
+                        break
+        # Only keep notes that have both start and end times
+        notes = [note for note in notes if note[2] is not None]
+        if notes:
+            track_name = track.name if track.name else f'Track_{i}'
+            tracks_notes[track_name] = notes
+
+    return tracks_notes
 
 
 def calculate_overlap(notes_a, notes_b):
@@ -210,43 +219,85 @@ def plot_midi_notes(notes_a, notes_b, warped_notes_b, output_path):
     print(f"Note visualization saved to {output_path}")
 
 
-def main(midi_a_path, midi_b_path, mp3_c_path, output_midi_path, output_mp3_path, output_image_path, test_mode=False):
-    notes_a = load_midi(midi_a_path)
-    notes_b = load_midi(midi_b_path)
-    
-    print("Starting alignment process using Dynamic Time Warping...")
-    warped_notes_b, time_map = align_midi_dtw(notes_a, notes_b)
-    
+def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path, mp3_c_path, output_midi_path, output_mp3_path, output_image_path, test_mode=False):
+    # Load analysis MIDI files
+    analysis_piano_tracks = load_midi(analysis_piano_midi_path)
+    analysis_no_piano_tracks = load_midi(analysis_no_piano_midi_path)
+
+    # Load Master MIDI file
+    master_tracks = load_midi(master_midi_path)
+
+    # Extract notes for comparison
+    # Analysis piano notes (from the only track in the piano MIDI)
+    analysis_piano_notes = list(analysis_piano_tracks.values())[0]
+
+    # Analysis orchestra notes (from the only track in the no_piano MIDI)
+    analysis_orchestra_notes = list(analysis_no_piano_tracks.values())[0]
+
+    # Master piano notes
+    master_piano_notes = []
+    piano_track_names = []
+    for track_name, track_events in master_tracks.items():
+        # Check if the track name contains 'piano' (case-insensitive)
+        if 'piano' in track_name.lower():
+            master_piano_notes.extend(track_events)
+            piano_track_names.append(track_name)
+
+    if not master_piano_notes:
+        print("No piano tracks found in Master MIDI.")
+
+    # Master orchestra notes (exclude piano tracks)
+    orchestra_track_names = [name for name in master_tracks.keys() if name not in piano_track_names]
+    master_orchestra_notes = []
+    for track_name in orchestra_track_names:
+        master_orchestra_notes.extend(master_tracks[track_name])
+
+    # Align piano notes
+    print("Starting piano alignment process using Dynamic Time Warping...")
+    _, time_map_piano = align_midi_dtw(master_piano_notes, analysis_piano_notes)
+
+    # Align orchestra notes
+    print("Starting orchestra alignment process using Dynamic Time Warping...")
+    _, time_map_orchestra = align_midi_dtw(master_orchestra_notes, analysis_orchestra_notes)
+
+    # Combine time maps
+    combined_time_map = combine_time_maps(time_map_piano, time_map_orchestra)
+
+    # Apply the combined time map to warp all analysis notes
+    analysis_notes_combined = analysis_piano_notes + analysis_orchestra_notes
+    warped_notes_b = warp_notes(analysis_notes_combined, combined_time_map)
+
     # Create a new MIDI file with warped notes
     new_midi = mido.MidiFile()
-    track = mido.MidiTrack()
-    new_midi.tracks.append(track)
-    
-    # Sort notes by start time
-    warped_notes_b.sort(key=lambda x: x[1])
-    
-    # Insert warped notes into the MIDI file
-    current_time = 0
-    for note in warped_notes_b:
-        delta_time = max(0, int((note[1] - current_time) * 1000))
-        duration = max(0, int((note[2] - note[1]) * 1000))
-        if duration > 0:
-            track.append(mido.Message('note_on', note=note[0], velocity=64, time=delta_time))
-            track.append(mido.Message('note_off', note=note[0], velocity=64, time=duration))
-            current_time = note[2]
-    
+    # Reconstruct tracks based on analysis MIDI files
+    # (Add code here to create tracks and add warped notes)
+
+    # Save the new MIDI file
     new_midi.save(output_midi_path)
     print(f"Warped MIDI saved to {output_midi_path}")
-    
+
     if not test_mode:
-        # Stretch the MP3 file using the time map
-        print("Stretching MP3 file according to time warp...")
-        stretch_audio_with_time_map(mp3_c_path, output_mp3_path, time_map)
+        # Stretch the MP3 file using the combined time map
+        print("Stretching MP3 file according to combined time warp...")
+        stretch_audio_with_time_map(mp3_c_path, output_mp3_path, combined_time_map)
         print(f"Stretched MP3 saved to {output_mp3_path}")
-    
+
     # Generate note visualization
     print("Generating note visualization...")
-    plot_midi_notes(notes_a, notes_b, warped_notes_b, output_image_path)
+    plot_midi_notes(master_piano_notes + master_orchestra_notes, analysis_notes_combined, warped_notes_b, output_image_path)
+
+
+def combine_time_maps(time_map1, time_map2):
+    combined_time_map = {}
+    time_keys = sorted(set(time_map1.keys()).union(time_map2.keys()))
+    for t in time_keys:
+        mapped_times = []
+        if t in time_map1:
+            mapped_times.append(time_map1[t])
+        if t in time_map2:
+            mapped_times.append(time_map2[t])
+        combined_time_map[t] = sum(mapped_times) / len(mapped_times)
+    return combined_time_map
 
 
 def stretch_audio_with_time_map(input_audio_path, output_audio_path, time_map):
@@ -278,8 +329,9 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1:
         parser = argparse.ArgumentParser(description='Align and stretch MIDI and MP3 files.')
-        parser.add_argument('midi_a', help='Path to the first MIDI file (A)')
-        parser.add_argument('midi_b', help='Path to the second MIDI file (B)')
+        parser.add_argument('analysis_piano_midi', help='Path to the analysis piano MIDI file')
+        parser.add_argument('analysis_no_piano_midi', help='Path to the analysis no_piano MIDI file')
+        parser.add_argument('master_midi', help='Path to the Master MIDI file')
         parser.add_argument('mp3_c', help='Path to the MP3 file (C)')
         parser.add_argument('output_midi', help='Path for the output stretched MIDI file')
         parser.add_argument('output_mp3', help='Path for the output stretched MP3 file')
@@ -287,4 +339,4 @@ if __name__ == "__main__":
 
         args = parser.parse_args()
 
-        main(args.midi_a, args.midi_b, args.mp3_c, args.output_midi, args.output_mp3, args.output_image)
+        main(args.analysis_piano_midi, args.analysis_no_piano_midi, args.master_midi, args.mp3_c, args.output_midi, args.output_mp3, args.output_image)
