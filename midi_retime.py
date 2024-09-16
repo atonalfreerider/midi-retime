@@ -7,7 +7,54 @@ from scipy.optimize import minimize_scalar
 from pyrubberband import pyrb
 import matplotlib.pyplot as plt
 import librosa.display
+import sys
 
+# Add color codes for the status bars
+WHITE = '\033[97m'
+RED = '\033[91m'
+RESET = '\033[0m'
+
+def log_status_bars(step, max_steps, piano_length, no_piano_length, master_length, scaling_factor):
+    def create_bar(length, step, max_steps, is_master=False):
+        if is_master:
+            bar = f"{WHITE}{'█' * length}{RESET}"
+            return bar
+        subdivisions = 2 ** step
+        section_length = length // subdivisions
+        bar = ""
+        for i in range(subdivisions):
+            color = WHITE if i % 2 == 0 else RED
+            bar += f"{color}{'█' * section_length}{RESET}"
+        # Handle any remaining length
+        remaining = length - (section_length * subdivisions)
+        if remaining > 0:
+            bar += WHITE + '█' * remaining + RESET
+        return bar
+
+    # Scale lengths based on the fixed scaling_factor
+    piano_length_px = int(piano_length * scaling_factor)
+    no_piano_length_px = int(no_piano_length * scaling_factor)
+    master_length_px = int(master_length * scaling_factor)
+
+    piano_bar = create_bar(piano_length_px, step, max_steps)
+    no_piano_bar = create_bar(no_piano_length_px, step, max_steps)
+    master_bar = create_bar(master_length_px, step, max_steps, is_master=True)
+
+    # Format durations to mm:ss for display
+    def format_duration(seconds):
+        minutes = int(seconds) // 60
+        secs = int(seconds) % 60
+        return f"{minutes}:{secs:02d}"
+
+    piano_duration_str = format_duration(piano_length)
+    no_piano_duration_str = format_duration(no_piano_length)
+    master_duration_str = format_duration(master_length)
+
+    print("\nProgress:")
+    print(f"Piano Analysis MIDI ({piano_duration_str}):    |{piano_bar}|")
+    print(f"No-Piano Analysis MIDI ({no_piano_duration_str}): |{no_piano_bar}|")
+    print(f"Master MIDI ({master_duration_str}):           |{master_bar}|")
+    print(f"Step: {step}/{max_steps}\n")
 
 def load_midi(file_path):
     mid = mido.MidiFile(file_path)
@@ -16,8 +63,11 @@ def load_midi(file_path):
     for i, track in enumerate(mid.tracks):
         notes = []
         current_time = 0
+        tempo = 500000  # Default tempo (microseconds per beat)
         for msg in track:
-            current_time += msg.time
+            if msg.type == 'set_tempo':
+                tempo = msg.tempo
+            current_time += mido.tick2second(msg.time, mid.ticks_per_beat, tempo)
             if msg.type == 'note_on' and msg.velocity > 0:
                 notes.append((msg.note, current_time, None))
             elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
@@ -78,9 +128,9 @@ def optimize_stretch(notes_a, notes_b, start_time, end_time):
     return result.x
 
 
-def align_midi_dtw(notes_a, notes_b):
+def align_midi_dtw(notes_a, notes_b, scaling_factor, max_duration):
     # Create time grids for both MIDI files
-    end_time = max(max(note[2] for note in notes_a), max(note[2] for note in notes_b))
+    end_time = max_duration  # Use the overall maximum duration
     time_step = 0.05  # 50 milliseconds
     times = np.arange(0, end_time, time_step)
     
@@ -92,8 +142,13 @@ def align_midi_dtw(notes_a, notes_b):
     chunk_size = 1000  # Adjust this value based on available memory
     num_chunks = (len(times) + chunk_size - 1) // chunk_size
     
+    max_steps = int(np.log2(num_chunks)) if num_chunks > 0 else 1
     warped_times = []
     for i in range(num_chunks):
+        step = int(np.log2(i+1)) if i > 0 else 1
+        # Remove the log_status_bars call from here
+        # log_status_bars(step, max_steps, current_duration, current_duration, current_duration, scaling_factor)
+        
         start_idx = i * chunk_size
         end_idx = min((i + 1) * chunk_size, len(times))
         
@@ -252,13 +307,45 @@ def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path
     for track_name in orchestra_track_names:
         master_orchestra_notes.extend(master_tracks[track_name])
 
+    # Calculate durations in seconds
+    piano_duration = max(note[2] for note in analysis_piano_notes) if analysis_piano_notes else 0
+    no_piano_duration = max(note[2] for note in analysis_orchestra_notes) if analysis_orchestra_notes else 0
+    master_duration = max(note[2] for note in master_piano_notes + master_orchestra_notes) if (master_piano_notes + master_orchestra_notes) else 0
+
+    # Determine the maximum duration among all tracks
+    max_duration = max(piano_duration, no_piano_duration, master_duration)
+
+    # Import shutil for terminal size
+    import shutil
+
+    # Get terminal width
+    terminal_width = shutil.get_terminal_size(fallback=(80, 20)).columns
+
+    # Define labels for each MIDI type
+    labels = [
+        "Piano Analysis MIDI:",
+        "No-Piano Analysis MIDI:",
+        "Master MIDI:"
+    ]
+    
+    # Calculate the maximum label length
+    max_label_length = max(len(label) for label in labels) + 10  # Extra space for duration and pipe
+    
+    # Define padding and separators
+    padding = 2  # For spacing and pipe characters
+    max_bar_length = terminal_width - max_label_length - padding
+    max_bar_length = max_bar_length if max_bar_length > 0 else 50  # Fallback to 50 if negative
+
+    # Calculate fixed scaling factor based on the maximum duration
+    scaling_factor = max_bar_length / max_duration if max_duration > 0 else 1
+
     # Align piano notes
     print("Starting piano alignment process using Dynamic Time Warping...")
-    _, time_map_piano = align_midi_dtw(master_piano_notes, analysis_piano_notes)
+    warped_notes_piano, time_map_piano = align_midi_dtw(master_piano_notes, analysis_piano_notes, scaling_factor, max_duration)
 
     # Align orchestra notes
     print("Starting orchestra alignment process using Dynamic Time Warping...")
-    _, time_map_orchestra = align_midi_dtw(master_orchestra_notes, analysis_orchestra_notes)
+    warped_notes_orchestra, time_map_orchestra = align_midi_dtw(master_orchestra_notes, analysis_orchestra_notes, scaling_factor, max_duration)
 
     # Combine time maps
     combined_time_map = combine_time_maps(time_map_piano, time_map_orchestra)
@@ -266,6 +353,16 @@ def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path
     # Apply the combined time map to warp all analysis notes
     analysis_notes_combined = analysis_piano_notes + analysis_orchestra_notes
     warped_notes_b = warp_notes(analysis_notes_combined, combined_time_map)
+
+    # Log status bars with fixed scaling_factor and actual durations
+    log_status_bars(
+        step=1,  # Single step since scaling is fixed
+        max_steps=1,
+        piano_length=piano_duration,
+        no_piano_length=no_piano_duration,
+        master_length=master_duration,
+        scaling_factor=scaling_factor
+    )
 
     # Create a new MIDI file with warped notes
     new_midi = mido.MidiFile()
@@ -325,18 +422,15 @@ def stretch_audio_with_time_map(input_audio_path, output_audio_path, time_map):
 
 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1:
-        parser = argparse.ArgumentParser(description='Align and stretch MIDI and MP3 files.')
-        parser.add_argument('analysis_piano_midi', help='Path to the analysis piano MIDI file')
-        parser.add_argument('analysis_no_piano_midi', help='Path to the analysis no_piano MIDI file')
-        parser.add_argument('master_midi', help='Path to the Master MIDI file')
-        parser.add_argument('mp3_c', help='Path to the MP3 file (C)')
-        parser.add_argument('output_midi', help='Path for the output stretched MIDI file')
-        parser.add_argument('output_mp3', help='Path for the output stretched MP3 file')
-        parser.add_argument('output_image', help='Path for the output visualization image')
+    parser = argparse.ArgumentParser(description='Align and stretch MIDI and MP3 files.')
+    parser.add_argument('analysis_piano_midi', help='Path to the analysis piano MIDI file')
+    parser.add_argument('analysis_no_piano_midi', help='Path to the analysis no_piano MIDI file')
+    parser.add_argument('master_midi', help='Path to the Master MIDI file')
+    parser.add_argument('mp3_c', help='Path to the MP3 file (C)')
+    parser.add_argument('output_midi', help='Path for the output stretched MIDI file')
+    parser.add_argument('output_mp3', help='Path for the output stretched MP3 file')
+    parser.add_argument('output_image', help='Path for the output visualization image')
 
-        args = parser.parse_args()
+    args = parser.parse_args()
 
-        main(args.analysis_piano_midi, args.analysis_no_piano_midi, args.master_midi, args.mp3_c, args.output_midi, args.output_mp3, args.output_image)
+    main(args.analysis_piano_midi, args.analysis_no_piano_midi, args.master_midi, args.mp3_c, args.output_midi, args.output_mp3, args.output_image)
