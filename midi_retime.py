@@ -240,41 +240,73 @@ def stretch_audio(y, sr, stretches):
     return np.concatenate(stretched_audio)
 
 
-def plot_midi_notes(notes_a, notes_b, warped_notes_b, output_path):
+def plot_midi_notes(master_piano_notes, analysis_piano_notes, warped_analysis_piano_notes, output_path):
     plt.figure(figsize=(20, 10))
     
     # Define vertical offsets for each track
-    offset_a, offset_b, offset_warped = 0, 0.2, 0.4
+    offset_master_piano, offset_analysis_piano, offset_warped_analysis_piano = 0, 0.2, 0.4
 
-    # Plot notes from MIDI A
-    for note in notes_a:
-        plt.plot([note[1], note[2]], [note[0] + offset_a, note[0] + offset_a], color='blue', linewidth=2, alpha=0.7)
+    # Plot notes from Master Piano
+    for note in master_piano_notes:
+        plt.plot([note[1], note[2]], [note[0] + offset_master_piano, note[0] + offset_master_piano], color='blue', linewidth=2, alpha=0.7)
 
-    # Plot notes from original MIDI B
-    for note in notes_b:
-        plt.plot([note[1], note[2]], [note[0] + offset_b, note[0] + offset_b], color='magenta', linewidth=2, alpha=0.5)
+    # Plot notes from Analysis Piano
+    for note in analysis_piano_notes:
+        plt.plot([note[1], note[2]], [note[0] + offset_analysis_piano, note[0] + offset_analysis_piano], color='magenta', linewidth=2, alpha=0.5)
 
-    # Plot notes from warped MIDI B
-    for note in warped_notes_b:
-        plt.plot([note[1], note[2]], [note[0] + offset_warped, note[0] + offset_warped], color='green', linewidth=2, alpha=0.5)
+    # Plot warped Analysis Piano notes
+    for note in warped_analysis_piano_notes:
+        plt.plot([note[1], note[2]], [note[0] + offset_warped_analysis_piano, note[0] + offset_warped_analysis_piano], color='green', linewidth=2, alpha=0.5)
 
     plt.xlabel('Time (seconds)')
     plt.ylabel('Note Pitch')
-    plt.title('MIDI Note Alignment Visualization')
+    plt.title('Piano MIDI Note Alignment Visualization')
     legend_elements = [
-        plt.Line2D([0], [0], color='blue', lw=2, label='MIDI A'),
-        plt.Line2D([0], [0], color='magenta', lw=2, label='MIDI B (Original)'),
-        plt.Line2D([0], [0], color='green', lw=2, label='MIDI B (Warped)')
+        plt.Line2D([0], [0], color='blue', lw=2, label='Master Piano'),
+        plt.Line2D([0], [0], color='magenta', lw=2, label='Analysis Piano (Original)'),
+        plt.Line2D([0], [0], color='green', lw=2, label='Analysis Piano (Warped)')
     ]
     plt.legend(handles=legend_elements, loc='upper right')
     plt.grid(True, which='both', linestyle='--', color='gray', alpha=0.5)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
-    print(f"Note visualization saved to {output_path}")
+    print(f"Piano note visualization saved to {output_path}")
 
+def plot_midi_notes_no_piano(master_orchestra_notes, analysis_orchestra_notes, warped_analysis_orchestra_notes, output_path):
+    plt.figure(figsize=(20, 10))
+    
+    # Define vertical offsets for each track
+    offset_master_orchestra, offset_analysis_orchestra, offset_warped_analysis_orchestra = 0, 0.2, 0.4
 
-def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path, mp3_c_path, output_midi_path, output_mp3_path, output_image_path, test_mode=False):
+    # Plot notes from Master Orchestra
+    for note in master_orchestra_notes:
+        plt.plot([note[1], note[2]], [note[0] + offset_master_orchestra, note[0] + offset_master_orchestra], color='blue', linewidth=2, alpha=0.7)
+
+    # Plot notes from Analysis Orchestra
+    for note in analysis_orchestra_notes:
+        plt.plot([note[1], note[2]], [note[0] + offset_analysis_orchestra, note[0] + offset_analysis_orchestra], color='magenta', linewidth=2, alpha=0.5)
+
+    # Plot warped Analysis Orchestra notes
+    for note in warped_analysis_orchestra_notes:
+        plt.plot([note[1], note[2]], [note[0] + offset_warped_analysis_orchestra, note[0] + offset_warped_analysis_orchestra], color='green', linewidth=2, alpha=0.5)
+
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Note Pitch')
+    plt.title('Orchestra MIDI Note Alignment Visualization')
+    legend_elements = [
+        plt.Line2D([0], [0], color='blue', lw=2, label='Master Orchestra'),
+        plt.Line2D([0], [0], color='magenta', lw=2, label='Analysis Orchestra (Original)'),
+        plt.Line2D([0], [0], color='green', lw=2, label='Analysis Orchestra (Warped)')
+    ]
+    plt.legend(handles=legend_elements, loc='upper right')
+    plt.grid(True, which='both', linestyle='--', color='gray', alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    print(f"Orchestra note visualization saved to {output_path}")
+
+def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path, mp3_c_path, output_midi_path, output_mp3_path, output_image_piano_path, output_image_orchestra_path, test_mode=False):
     # Load analysis MIDI files
     analysis_piano_tracks = load_midi(analysis_piano_midi_path)
     analysis_no_piano_tracks = load_midi(analysis_no_piano_midi_path)
@@ -339,30 +371,64 @@ def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path
     # Calculate fixed scaling factor based on the maximum duration
     scaling_factor = max_bar_length / max_duration if max_duration > 0 else 1
 
-    # Align piano notes
-    print("Starting piano alignment process using Dynamic Time Warping...")
-    warped_notes_piano, time_map_piano = align_midi_dtw(master_piano_notes, analysis_piano_notes, scaling_factor, max_duration)
+    # Initialize combined time map
+    combined_time_map = {}
 
-    # Align orchestra notes
-    print("Starting orchestra alignment process using Dynamic Time Warping...")
-    warped_notes_orchestra, time_map_orchestra = align_midi_dtw(master_orchestra_notes, analysis_orchestra_notes, scaling_factor, max_duration)
+    # Initialize warped notes
+    warped_notes_piano = analysis_piano_notes
+    warped_notes_orchestra = analysis_orchestra_notes
 
-    # Combine time maps
-    combined_time_map = combine_time_maps(time_map_piano, time_map_orchestra)
+    # Determine number of alignment passes
+    num_passes = 10  # Define how many alignment passes to perform
 
-    # Apply the combined time map to warp all analysis notes
-    analysis_notes_combined = analysis_piano_notes + analysis_orchestra_notes
-    warped_notes_b = warp_notes(analysis_notes_combined, combined_time_map)
+    for pass_num in range(1, num_passes + 1):
+        if pass_num % 2 == 1:
+            # Odd pass: align piano
+            print(f"Alignment Pass {pass_num}: Aligning Piano")
+            warped_notes_piano, time_map_piano = align_midi_dtw(master_piano_notes, warped_notes_piano, scaling_factor, max_duration)
+            # Update combined_time_map
+            combined_time_map = combine_time_maps(combined_time_map, time_map_piano)
+        else:
+            # Even pass: align no-piano
+            print(f"Alignment Pass {pass_num}: Aligning No-Piano")
+            warped_notes_orchestra, time_map_orchestra = align_midi_dtw(master_orchestra_notes, warped_notes_orchestra, scaling_factor, max_duration)
+            # Update combined_time_map
+            combined_time_map = combine_time_maps(combined_time_map, time_map_orchestra)
+        
+        # Apply the combined time map to warp all analysis notes
+        warped_notes_piano = warp_notes(warped_notes_piano, combined_time_map)
+        warped_notes_orchestra = warp_notes(warped_notes_orchestra, combined_time_map)
 
-    # Log status bars with fixed scaling_factor and actual durations
-    log_status_bars(
-        step=1,  # Single step since scaling is fixed
-        max_steps=1,
-        piano_length=piano_duration,
-        no_piano_length=no_piano_duration,
-        master_length=master_duration,
-        scaling_factor=scaling_factor
-    )
+        # Log status bars with fixed scaling_factor and actual durations
+        current_piano_duration = max(note[2] for note in warped_notes_piano) if warped_notes_piano else 0
+        current_no_piano_duration = max(note[2] for note in warped_notes_orchestra) if warped_notes_orchestra else 0
+        current_master_duration = master_duration  # Assuming master is fixed
+
+        log_status_bars(
+            step=pass_num,
+            max_steps=num_passes,
+            piano_length=current_piano_duration,
+            no_piano_length=current_no_piano_duration,
+            master_length=current_master_duration,
+            scaling_factor=scaling_factor
+        )
+
+        # Generate separate visualizations after each alignment pass
+        plot_midi_notes(
+            master_piano_notes,
+            warped_notes_piano,
+            warped_notes_piano,  # Pass warped notes
+            output_image_piano_path
+        )
+        plot_midi_notes_no_piano(
+            master_orchestra_notes,
+            warped_notes_orchestra,
+            warped_notes_orchestra,  # Pass warped notes
+            output_image_orchestra_path
+        )
+    
+    # Combine all warped notes
+    analysis_notes_combined = warped_notes_piano + warped_notes_orchestra
 
     # Create a new MIDI file with warped notes
     new_midi = mido.MidiFile()
@@ -379,9 +445,22 @@ def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path
         stretch_audio_with_time_map(mp3_c_path, output_mp3_path, combined_time_map)
         print(f"Stretched MP3 saved to {output_mp3_path}")
 
-    # Generate note visualization
-    print("Generating note visualization...")
-    plot_midi_notes(master_piano_notes + master_orchestra_notes, analysis_notes_combined, warped_notes_b, output_image_path)
+    # Generate final note visualizations
+    print("Generating final note visualizations...")
+    plot_midi_notes(
+        master_piano_notes,
+        warped_notes_piano,
+        warped_notes_piano,  # Pass final warped notes
+        output_image_piano_path
+    )
+    plot_midi_notes_no_piano(
+        master_orchestra_notes,
+        warped_notes_orchestra,
+        warped_notes_orchestra,  # Pass final warped notes
+        output_image_orchestra_path
+    )
+
+    print("Processing complete.")
 
 
 def combine_time_maps(time_map1, time_map2):
@@ -429,8 +508,9 @@ if __name__ == "__main__":
     parser.add_argument('mp3_c', help='Path to the MP3 file (C)')
     parser.add_argument('output_midi', help='Path for the output stretched MIDI file')
     parser.add_argument('output_mp3', help='Path for the output stretched MP3 file')
-    parser.add_argument('output_image', help='Path for the output visualization image')
+    parser.add_argument('output_image_piano', help='Path for the output piano visualization image')
+    parser.add_argument('output_image_orchestra', help='Path for the output orchestra visualization image')
 
     args = parser.parse_args()
 
-    main(args.analysis_piano_midi, args.analysis_no_piano_midi, args.master_midi, args.mp3_c, args.output_midi, args.output_mp3, args.output_image)
+    main(args.analysis_piano_midi, args.analysis_no_piano_midi, args.master_midi, args.mp3_c, args.output_midi, args.output_mp3, args.output_image_piano, args.output_image_orchestra)
