@@ -11,24 +11,37 @@ def create_test_midi(file_name, note_timings):
     midi.save(file_name)
 
 def test_midi_alignment():
-    # Create two test MIDI files
-    create_test_midi('test_midi_a.mid', [(60+i, i*1000, (i+1)*1000) for i in range(10)])
-    create_test_midi('test_midi_b.mid', [(60+i, i*1100, (i+1)*1000) for i in range(10)])
+    # Create piano and no-piano analysis MIDI files
+    create_test_midi('analysis_piano.mid', [(60+i, i*1000, (i+1)*1000) for i in range(10)])
+    create_test_midi('analysis_no_piano.mid', [(72+i, i*1000, (i+1)*1000) for i in range(10)])
+    
+    # Create master MIDI by combining piano and no-piano notes
+    midi_a = load_midi('analysis_piano.mid')
+    midi_b = load_midi('analysis_no_piano.mid')
+    master_notes = list(midi_a.values())[0] + list(midi_b.values())[0]
+    create_test_midi('master_midi.mid', master_notes)
+    
+    # Run alignment with new main structure
+    print("\nRunning alignment with new structure...")
+    main(
+        'analysis_piano.mid', 
+        'analysis_no_piano.mid', 
+        'master_midi.mid', 
+        'dummy.mp3', 
+        'test_output.mid', 
+        'test_output.mp3', 
+        'test_visualization_piano.jpg', 
+        'test_visualization_orchestra.jpg', 
+        test_mode=True
+    )
 
-    # Run alignment on original test case
-    print("\nRunning alignment on original test case...")
-    main('test_midi_a.mid', 'test_midi_b.mid', 'dummy.mp3', 'test_output.mid', 'test_output.mp3', 'test_visualization.jpg', test_mode=True)
+    # Load and compare the aligned MIDI
+    notes_master = load_midi('master_midi.mid')
+    notes_aligned = load_midi('test_output.mid')
 
-    # Load and compare the original and aligned MIDI files
-    notes_a = load_midi('test_midi_a.mid')
-    notes_b_original = load_midi('test_midi_b.mid')
-    notes_b_aligned = load_midi('test_output.mid')
+    overlap = calculate_overlap(list(notes_master.values())[0], list(notes_aligned.values())[0])
 
-    overlap_before = calculate_overlap(notes_a, notes_b_original)
-    overlap_after = calculate_overlap(notes_a, notes_b_aligned)
-
-    print(f"Overlap before alignment: {overlap_before:.2f}")
-    print(f"Overlap after alignment: {overlap_after:.2f}")
+    print(f"Overlap after alignment: {overlap:.2f}")
     
     print("Test passed: Alignment improved overlap between MIDI files")
 

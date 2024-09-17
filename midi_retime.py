@@ -2,20 +2,19 @@ import argparse
 import mido
 import librosa
 import numpy as np
-import soundfile as sf
 from scipy.optimize import minimize_scalar
 from pyrubberband import pyrb
 import matplotlib.pyplot as plt
 import librosa.display
-import sys
+import shutil
 
 # Add color codes for the status bars
 WHITE = '\033[97m'
 RED = '\033[91m'
 RESET = '\033[0m'
 
-def log_status_bars(step, max_steps, piano_length, no_piano_length, master_length, scaling_factor):
-    def create_bar(length, step, max_steps, is_master=False):
+def log_status_bars(step, piano_length, no_piano_length, master_length, scaling_factor):
+    def create_bar(length, step, is_master=False):
         if is_master:
             bar = f"{WHITE}{'█' * length}{RESET}"
             return bar
@@ -36,9 +35,9 @@ def log_status_bars(step, max_steps, piano_length, no_piano_length, master_lengt
     no_piano_length_px = int(no_piano_length * scaling_factor)
     master_length_px = int(master_length * scaling_factor)
 
-    piano_bar = create_bar(piano_length_px, step, max_steps)
-    no_piano_bar = create_bar(no_piano_length_px, step, max_steps)
-    master_bar = create_bar(master_length_px, step, max_steps, is_master=True)
+    piano_bar = create_bar(piano_length_px, step)
+    no_piano_bar = create_bar(no_piano_length_px, step)
+    master_bar = create_bar(master_length_px, step, is_master=True)
 
     # Format durations to mm:ss for display
     def format_duration(seconds):
@@ -54,7 +53,6 @@ def log_status_bars(step, max_steps, piano_length, no_piano_length, master_lengt
     print(f"Piano Analysis MIDI ({piano_duration_str}):    |{piano_bar}|")
     print(f"No-Piano Analysis MIDI ({no_piano_duration_str}): |{no_piano_bar}|")
     print(f"Master MIDI ({master_duration_str}):           |{master_bar}|")
-    print(f"Step: {step}/{max_steps}\n")
 
 def load_midi(file_path):
     mid = mido.MidiFile(file_path)
@@ -128,7 +126,7 @@ def optimize_stretch(notes_a, notes_b, start_time, end_time):
     return result.x
 
 
-def align_midi_dtw(notes_a, notes_b, scaling_factor, max_duration):
+def align_midi_dtw(notes_a, notes_b, max_duration, scaling_factor):
     # Create time grids for both MIDI files
     end_time = max_duration  # Use the overall maximum duration
     time_step = 0.05  # 50 milliseconds
@@ -145,10 +143,6 @@ def align_midi_dtw(notes_a, notes_b, scaling_factor, max_duration):
     max_steps = int(np.log2(num_chunks)) if num_chunks > 0 else 1
     warped_times = []
     for i in range(num_chunks):
-        step = int(np.log2(i+1)) if i > 0 else 1
-        # Remove the log_status_bars call from here
-        # log_status_bars(step, max_steps, current_duration, current_duration, current_duration, scaling_factor)
-        
         start_idx = i * chunk_size
         end_idx = min((i + 1) * chunk_size, len(times))
         
@@ -345,10 +339,7 @@ def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path
     master_duration = max(note[2] for note in master_piano_notes + master_orchestra_notes) if (master_piano_notes + master_orchestra_notes) else 0
 
     # Determine the maximum duration among all tracks
-    max_duration = max(piano_duration, no_piano_duration, master_duration)
-
-    # Import shutil for terminal size
-    import shutil
+    max_duration = max(piano_duration, no_piano_duration, master_duration)    
 
     # Get terminal width
     terminal_width = shutil.get_terminal_size(fallback=(80, 20)).columns
@@ -385,13 +376,13 @@ def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path
         if pass_num % 2 == 1:
             # Odd pass: align piano
             print(f"Alignment Pass {pass_num}: Aligning Piano")
-            warped_notes_piano, time_map_piano = align_midi_dtw(master_piano_notes, warped_notes_piano, scaling_factor, max_duration)
+            warped_notes_piano, time_map_piano = align_midi_dtw(master_piano_notes, warped_notes_piano, max_duration, scaling_factor)
             # Update combined_time_map
             combined_time_map = combine_time_maps(combined_time_map, time_map_piano)
         else:
             # Even pass: align no-piano
             print(f"Alignment Pass {pass_num}: Aligning No-Piano")
-            warped_notes_orchestra, time_map_orchestra = align_midi_dtw(master_orchestra_notes, warped_notes_orchestra, scaling_factor, max_duration)
+            warped_notes_orchestra, time_map_orchestra = align_midi_dtw(master_orchestra_notes, warped_notes_orchestra, max_duration, scaling_factor)
             # Update combined_time_map
             combined_time_map = combine_time_maps(combined_time_map, time_map_orchestra)
         
@@ -406,7 +397,6 @@ def main(analysis_piano_midi_path, analysis_no_piano_midi_path, master_midi_path
 
         log_status_bars(
             step=pass_num,
-            max_steps=num_passes,
             piano_length=current_piano_duration,
             no_piano_length=current_no_piano_duration,
             master_length=current_master_duration,
