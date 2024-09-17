@@ -4,6 +4,11 @@ import mido
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize_scalar
 
+# Add these constants at the beginning of the file
+RED = '\033[91m'
+WHITE = '\033[97m'
+RESET = '\033[0m'
+
 def load_midi(file_path):
     mid = mido.MidiFile(file_path)
     tracks_notes = {}
@@ -93,6 +98,46 @@ def plot_timings(notes_analysis, notes_master, notes_retimed, output_path):
     plt.savefig(output_path)
     plt.close()
 
+def validate_timing_dict(timing_dict, master_duration):
+    # Sort the timing_dict by keys
+    sorted_timing = dict(sorted(timing_dict.items(), key=lambda item: float(item[0])))
+    
+    # Initialize variables
+    previous_time = 0
+    total_adjusted_duration = 0.0
+    
+    for start_time, stretch_factor in sorted_timing.items():
+        start_time = float(start_time)
+        if start_time < previous_time:
+            print(f"{RED}Error: Timing dictionary is not sorted properly.{RESET}")
+            return False
+        previous_time = start_time
+    
+    # Add an end point at master_duration if not present
+    if str(master_duration) not in sorted_timing:
+        sorted_timing[str(master_duration)] = 1.0  # No stretch at the end
+    
+    # Re-sort after adding end point
+    sorted_timing = dict(sorted(sorted_timing.items(), key=lambda item: float(item[0])))
+    
+    # Calculate total adjusted duration
+    keys = list(sorted_timing.keys())
+    for i in range(len(keys) - 1):
+        start = float(keys[i])
+        end = float(keys[i + 1])
+        stretch = float(sorted_timing[keys[i]])
+        section_duration = end - start
+        adjusted_duration = section_duration * stretch
+        total_adjusted_duration += adjusted_duration
+    
+    # Validate the total adjusted duration
+    if abs(total_adjusted_duration - master_duration) < 0.1:  # Tolerance of 100ms
+        print(f"{WHITE}Validation Passed: Adjusted duration matches master duration.{RESET}")
+        return True
+    else:
+        print(f"{RED}Validation Failed: Adjusted duration ({total_adjusted_duration}s) does not match master duration ({master_duration}s).{RESET}")
+        return False
+
 def main(analysis_midi_path, instrument, master_midi_path, output_json, output_jpg):
     # Load MIDI files
     analysis_tracks = load_midi(analysis_midi_path)
@@ -111,6 +156,10 @@ def main(analysis_midi_path, instrument, master_midi_path, output_json, output_j
     
     # Recursive alignment
     recursive_align(retimed_notes, master_notes, timing_dict)
+    
+    # Validate timing dictionary
+    if not validate_timing_dict(timing_dict, master_duration):
+        print(f"{RED}Warning: Timing dictionary validation failed.{RESET}")
     
     # Save timing dictionary
     with open(output_json, 'w') as f:
