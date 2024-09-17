@@ -3,6 +3,7 @@ import json
 import numpy as np
 import soundfile as sf
 import librosa
+import pyrubberband as pyrb
 from scipy.interpolate import interp1d
 
 def load_timing_dict(piano_json, orchestra_json):
@@ -21,25 +22,21 @@ def combine_timing_dicts(dict1, dict2):
         combined[key] = (float(speed1) + float(speed2)) / 2
     return combined
 
-def interpolate_timing(combined_dict, total_duration, sr):
+def interpolate_timing(combined_dict, total_duration):
     keys = sorted(combined_dict.keys(), key=lambda x: float(x))
     times = np.array([float(k) for k in keys])
     speeds = np.array([combined_dict[k] for k in keys])
     interp_func = interp1d(times, speeds, kind='linear', fill_value='extrapolate')
-    new_times = np.linspace(0, total_duration, int(total_duration * sr))
-    interpolated_speeds = interp_func(new_times)
-    return new_times, interpolated_speeds
+    return interp_func
 
-def apply_time_stretch(y, sr, times, speeds):
+def stretch_audio(y, sr, stretches):
     stretched_audio = []
-    for i in range(len(times)-1):
-        start = int(times[i] * sr)
-        end = int(times[i+1] * sr)
-        segment = y[start:end]
-        speed = speeds[i]
-        if speed != 1.0 and len(segment) > 1:
-            segment = librosa.effects.time_stretch(segment, rate=speed)
-        stretched_audio.append(segment)
+    for start, end, factor in stretches:
+        start_sample = int(start * sr)
+        end_sample = int(end * sr)
+        segment = y[start_sample:end_sample]
+        stretched_segment = pyrb.time_stretch(segment, sr, factor)
+        stretched_audio.append(stretched_segment)
     return np.concatenate(stretched_audio)
 
 def main(mp3_path, piano_json, orchestra_json, output_wav):
@@ -49,8 +46,18 @@ def main(mp3_path, piano_json, orchestra_json, output_wav):
     y, sr = librosa.load(mp3_path, sr=None)
     total_duration = librosa.get_duration(y=y, sr=sr)
     
-    times, speeds = interpolate_timing(combined_dict, total_duration, sr)
-    warped_audio = apply_time_stretch(y, sr, times, speeds)
+    interp_func = interpolate_timing(combined_dict, total_duration)
+    
+    # Create stretches list
+    stretches = []
+    step = 0.1  # 100ms segments
+    for i in np.arange(0, total_duration, step):
+        start = i
+        end = min(i + step, total_duration)
+        factor = 1 / interp_func(i)  # Inverse of speed is the stretch factor
+        stretches.append((start, end, factor))
+    
+    warped_audio = stretch_audio(y, sr, stretches)
     
     sf.write(output_wav, warped_audio, sr)
     print(f"Retimed audio saved to {output_wav}")
