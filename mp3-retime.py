@@ -15,18 +15,18 @@ def load_timing_dict(piano_json, orchestra_json):
 
 def combine_timing_dicts(dict1, dict2):
     combined = {}
-    keys = sorted(set(dict1.keys()).union(dict2.keys()))
+    keys = sorted(set(dict1.keys()).union(dict2.keys()), key=lambda x: float(x))
     for key in keys:
-        speed1 = dict1.get(str(key), 1.0)
-        speed2 = dict2.get(str(key), 1.0)
-        combined[key] = (float(speed1) + float(speed2)) / 2
+        speed1 = float(dict1.get(str(key), 1.0))
+        speed2 = float(dict2.get(str(key), 1.0))
+        combined[float(key)] = (speed1 + speed2) / 2
     return combined
 
 def interpolate_timing(combined_dict, total_duration):
-    keys = sorted(combined_dict.keys(), key=lambda x: float(x))
-    times = np.array([float(k) for k in keys])
+    keys = sorted(combined_dict.keys())
+    times = np.array(keys)
     speeds = np.array([combined_dict[k] for k in keys])
-    interp_func = interp1d(times, speeds, kind='linear', fill_value='extrapolate')
+    interp_func = interp1d(times, speeds, kind='linear', fill_value="extrapolate")
     return interp_func
 
 def stretch_audio(y, sr, stretches):
@@ -35,9 +35,12 @@ def stretch_audio(y, sr, stretches):
         start_sample = int(start * sr)
         end_sample = int(end * sr)
         segment = y[start_sample:end_sample]
-        # Ensure factor is positive and reasonable
+        # Ensure factor is within a reasonable range to prevent extreme stretching
         factor = max(0.5, min(factor, 2.0))
-        stretched_segment = pyrb.time_stretch(segment, sr, factor)
+        if factor == 1.0:
+            stretched_segment = segment
+        else:
+            stretched_segment = pyrb.time_stretch(segment, sr, factor)
         stretched_audio.append(stretched_segment)
     return np.concatenate(stretched_audio)
 
@@ -50,14 +53,14 @@ def main(mp3_path, piano_json, orchestra_json, output_wav):
     
     interp_func = interpolate_timing(combined_dict, total_duration)
     
-    # Create stretches list
+    # Create stretches list with overlapping segments to ensure smooth transitions
     stretches = []
     step = 0.1  # 100ms segments
+    window = 0.2  # 200ms window for overlap
     for i in np.arange(0, total_duration, step):
         start = i
-        end = min(i + step, total_duration)
+        end = min(i + window, total_duration)
         speed = interp_func(i)
-        # Use stretch_factor directly instead of inverse
         factor = speed
         stretches.append((start, end, factor))
     

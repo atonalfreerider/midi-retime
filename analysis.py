@@ -4,8 +4,10 @@ import mido
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize_scalar
 import matplotlib.patches as mpatches
+import numpy as np
+from scipy.interpolate import interp1d
 
-# Add these constants at the beginning of the file
+# Constants for colored output
 RED = '\033[91m'
 WHITE = '\033[97m'
 RESET = '\033[0m'
@@ -13,15 +15,14 @@ RESET = '\033[0m'
 def load_midi(file_path, default_end_time=None):
     mid = mido.MidiFile(file_path)
     tracks_notes = {}
-    tempo = 500000  # Move tempo initialization outside the track loop
+    tempo = 500000  # Default tempo (microseconds per beat)
 
     for i, track in enumerate(mid.tracks):
         notes = []
         current_time = 0
-        # Remove tempo initialization from inside the loop
         for msg in track:
             if msg.type == 'set_tempo':
-                tempo = msg.tempo  # Update global tempo
+                tempo = msg.tempo
             current_time += mido.tick2second(msg.time, mid.ticks_per_beat, tempo)
             if msg.type == 'note_on' and msg.velocity > 0:
                 notes.append((msg.note, current_time, None))
@@ -30,16 +31,14 @@ def load_midi(file_path, default_end_time=None):
                     if notes[j][0] == msg.note and notes[j][2] is None:
                         notes[j] = (notes[j][0], notes[j][1], current_time)
                         break
-        # Assign default_end_time to notes without an end time
         if default_end_time is not None:
             for j in range(len(notes)):
                 if notes[j][2] is None:
                     notes[j] = (notes[j][0], notes[j][1], default_end_time)
         else:
-            # Remove notes without end times
             notes = [note for note in notes if note[2] is not None]
         if notes:
-            track_name = track.name if track.name else f'Track_{i}'
+            track_name = track.name if hasattr(track, 'name') and track.name else f'Track_{i}'
             tracks_notes[track_name] = notes
     return tracks_notes
 
@@ -59,12 +58,7 @@ def calculate_overlap(notes_a, notes_b):
     return overlap / total_area if total_area > 0 else 0
 
 def stretch_notes(notes, stretch_factor):
-    stretched_notes = []
-    for note in notes:
-        new_start = note[1] * stretch_factor
-        new_end = note[2] * stretch_factor
-        stretched_notes.append((note[0], new_start, new_end))
-    return stretched_notes
+    return [(note[0], note[1] * stretch_factor, note[2] * stretch_factor) for note in notes]
 
 def optimize_stretch(notes_a, notes_b):
     def objective(stretch_factor):
@@ -85,42 +79,28 @@ def recursive_align(notes_analysis, notes_master, timing_dict, start=0, end=None
     left_master = [note for note in notes_master if note[1] < midpoint]
     right_master = [note for note in notes_master if note[2] > midpoint]
     
-    # Prevent division by zero or empty lists
-    if not left_analysis or not left_master:
-        stretch_left = 1.0
-    else:
-        stretch_left = optimize_stretch(left_master, left_analysis)
+    stretch_left = optimize_stretch(left_master, left_analysis) if left_analysis and left_master else 1.0
+    stretch_right = optimize_stretch(right_master, right_analysis) if right_analysis and right_master else 1.0
     
-    if not right_analysis or not right_master:
-        stretch_right = 1.0
-    else:
-        stretch_right = optimize_stretch(right_master, right_analysis)
-    
-    # Record the stretch factors at the midpoint
     timing_dict[midpoint] = (stretch_left + stretch_right) / 2
     
-    # Continue recursion for left and right segments
     recursive_align(left_analysis, left_master, timing_dict, start, midpoint, depth+1, max_depth)
     recursive_align(right_analysis, right_master, timing_dict, midpoint, end, depth+1, max_depth)
 
 def plot_timings(notes_analysis, notes_master, notes_retimed, output_path, master_duration):
     plt.figure(figsize=(20, 10))
-    # Plot original analysis notes
     y_shift_analysis = 0.1
     for note in notes_analysis:
         plt.plot([note[1], note[2]], [note[0] + y_shift_analysis, note[0] + y_shift_analysis], color='red', alpha=0.5)
 
-    # Plot master notes
     y_shift_master = 0.2
     for note in notes_master:
         plt.plot([note[1], note[2]], [note[0] + y_shift_master, note[0] + y_shift_master], color='blue', alpha=0.5)
 
-    # Plot retimed analysis notes
     y_shift_retimed = 0.3
     for note in notes_retimed:
         plt.plot([note[1], note[2]], [note[0] + y_shift_retimed, note[0] + y_shift_retimed], color='green', alpha=0.5)
 
-    # Fix legend colors using custom patches to match plotted colors
     analysis_patch = mpatches.Patch(color='red', label='Analysis Original')
     master_patch = mpatches.Patch(color='blue', label='Master')
     retimed_patch = mpatches.Patch(color='green', label='Analysis Retimed')
@@ -129,29 +109,22 @@ def plot_timings(notes_analysis, notes_master, notes_retimed, output_path, maste
     plt.xlabel('Time (seconds)')
     plt.ylabel('Note Pitch')
     plt.title('MIDI Timing Alignment')
-    plt.xlim(0, master_duration)  # Ensure the x-axis matches the master duration
+    plt.xlim(0, master_duration)
     plt.savefig(output_path)
     plt.close()
 
 def validate_timing_dict(timing_dict, master_duration):
-    # Sort the timing_dict by keys as floats
     sorted_timing = dict(sorted(timing_dict.items(), key=lambda item: float(item[0])))
-
-    # Initialize variables
     previous_time = 0.0
     total_adjusted_duration = 0.0
 
-    # Add an end point at master_duration if not present (use float key)
     if master_duration not in sorted_timing:
-        sorted_timing[master_duration] = 1.0  # No stretch at the end
+        sorted_timing[master_duration] = 1.0
 
-    # Re-sort after adding end point
     sorted_timing = dict(sorted(sorted_timing.items(), key=lambda item: float(item[0])))
-
     keys = list(sorted_timing.keys())
     stretch_factors = list(sorted_timing.values())
 
-    # Calculate total adjusted duration
     for i in range(len(keys) - 1):
         start = float(keys[i])
         end = float(keys[i + 1])
@@ -160,8 +133,7 @@ def validate_timing_dict(timing_dict, master_duration):
         adjusted_duration = section_duration * stretch
         total_adjusted_duration += adjusted_duration
 
-    # Validate the total adjusted duration
-    if abs(total_adjusted_duration - master_duration) < 0.1:  # Tolerance of 100ms
+    if abs(total_adjusted_duration - master_duration) < 0.1:
         print(f"{WHITE}Validation Passed: Adjusted duration matches master duration.{RESET}")
         return True
     else:
@@ -170,12 +142,10 @@ def validate_timing_dict(timing_dict, master_duration):
         return False
 
 def normalize_timing_dict(timing_dict, master_duration):
-    # Calculate current total adjusted duration
     sorted_timing = dict(sorted(timing_dict.items(), key=lambda item: float(item[0])))
     keys = list(sorted_timing.keys())
     stretch_factors = list(sorted_timing.values())
     
-    # Add end point if not present (use float key)
     if master_duration not in sorted_timing:
         sorted_timing[master_duration] = 1.0
     
@@ -183,22 +153,15 @@ def normalize_timing_dict(timing_dict, master_duration):
     stretch_factors = list(sorted_timing.values())
     
     total_adjusted_duration = 0.0
-    durations = []
-    stretches = []
     for i in range(len(keys) - 1):
         start = float(keys[i])
         end = float(keys[i + 1])
         stretch = float(stretch_factors[i])
         section_duration = end - start
         adjusted_duration = section_duration * stretch
-        durations.append(adjusted_duration)
-        stretches.append(stretch)
         total_adjusted_duration += adjusted_duration
     
-    # Calculate normalization factor
     normalization_factor = master_duration / total_adjusted_duration if total_adjusted_duration != 0 else 1.0
-    
-    # Normalize stretch factors
     normalized_timing_dict = {}
     for i in range(len(keys) - 1):
         start = float(keys[i])
@@ -207,12 +170,27 @@ def normalize_timing_dict(timing_dict, master_duration):
     
     return normalized_timing_dict
 
+def extract_tempo_events(midi_file):
+    tempo_events = []
+    absolute_time = 0.0
+    current_tempo = 500000  # Default tempo
+
+    for track in midi_file.tracks:
+        track_time = 0.0
+        for msg in track:
+            track_time += mido.tick2second(msg.time, midi_file.ticks_per_beat, current_tempo)
+            if msg.type == 'set_tempo':
+                tempo_events.append((track_time, msg.tempo))
+                current_tempo = msg.tempo
+
+    return sorted(tempo_events, key=lambda x: x[0])
+
 def main(analysis_midi_path, instrument, master_midi_path, output_json, output_jpg, output_midi):
     # Load MIDI files
     master_midi = mido.MidiFile(master_midi_path)
     master_duration = master_midi.length
-    print(f"Master MIDI Duration: {master_duration} seconds")  # Debug statement
-
+    print(f"Master MIDI Duration: {master_duration} seconds")
+    
     analysis_tracks = load_midi(analysis_midi_path)
     master_tracks = load_midi(master_midi_path, default_end_time=master_duration)
     
@@ -234,58 +212,43 @@ def main(analysis_midi_path, instrument, master_midi_path, output_json, output_j
             if "piano" not in track_name.lower():
                 master_notes.extend(notes)
     
-    # **New Error Handling**
     if not master_notes:
         print(f"{RED}Error: No notes found for instrument '{instrument}' in master MIDI file.{RESET}")
         return
     
-    # Log master notes coverage
     max_master_note_time = max(note[2] for note in master_notes) if master_notes else 0
     print(f"Maximum end time in master notes: {max_master_note_time} seconds")
     print(f"Master MIDI Length: {master_duration} seconds")
     
-    # Optional: Log the number of notes with missing end times
     missing_end_notes = [note for note in master_notes if note[2] is None]
     if missing_end_notes:
         print(f"{RED}Warning: {len(missing_end_notes)} notes in master MIDI were missing end times and have been set to master_duration.{RESET}")
     
-    # Define analysis_duration before initial_stretch
     analysis_duration = max(note[2] for note in analysis_notes)
-
-    # Log analysis_duration
     print(f"Analysis MIDI Duration: {analysis_duration} seconds")
-
+    
     initial_stretch = master_duration / analysis_duration if analysis_duration > 0 else 1.0
     retimed_notes = stretch_notes(analysis_notes, initial_stretch)
     
-    # Initialize timing dictionary
     timing_dict = {0.0: initial_stretch}
-    
-    # Recursive alignment
     recursive_align(retimed_notes, master_notes, timing_dict, start=0.0, end=master_duration, depth=0, max_depth=10)
     
-    # Normalize timing dictionary to ensure total duration matches master_duration
     timing_dict = normalize_timing_dict(timing_dict, master_duration)
     
-    # Validate timing dictionary
     if validate_timing_dict(timing_dict, master_duration):
         print(f"{WHITE}Timing dictionary validation succeeded.{RESET}")
     else:
         print(f"{RED}Warning: Timing dictionary validation failed.{RESET}")
     
-    # Save timing dictionary
     with open(output_json, 'w') as f:
-        # Convert keys back to strings for JSON compatibility
         json.dump({str(k): v for k, v in timing_dict.items()}, f, indent=4)
     print(f"Timing adjustments saved to {output_json}")
     
-    # Apply stretch factors to analysis notes
     final_retimed_notes = []
     sorted_timing = dict(sorted(timing_dict.items(), key=lambda item: float(item[0])))
     keys = list(sorted_timing.keys())
     stretch_factors = list(sorted_timing.values())
     
-    # Correctly apply stretch factors without altering notes outside segments
     for i in range(len(keys) - 1):
         start = float(keys[i])
         end = float(keys[i + 1])
@@ -296,21 +259,17 @@ def main(analysis_midi_path, instrument, master_midi_path, output_json, output_j
                 new_end = start + (note[2] - start) * stretch
                 final_retimed_notes.append((note[0], new_start, new_end))
             elif note[1] < start and note[2] > end:
-                # Note spans the entire segment
                 new_start = start + (note[1] - start) * stretch
                 new_end = end + (note[2] - end) * stretch
                 final_retimed_notes.append((note[0], new_start, new_end))
             elif note[1] < start and start <= note[2] <= end:
-                # Note starts before the segment and ends within
                 new_end = start + (note[2] - start) * stretch
                 final_retimed_notes.append((note[0], note[1], new_end))
             elif start <= note[1] < end and note[2] > end:
-                # Note starts within the segment and ends after
                 new_start = start + (note[1] - start) * stretch
                 new_end = end + (note[2] - end) * stretch
                 final_retimed_notes.append((note[0], new_start, note[2]))
     
-    # Collect all note on and off events with their absolute times
     events = []
     for note, start, end in final_retimed_notes:
         events.append(('note_on', start, note, 64))
@@ -319,30 +278,17 @@ def main(analysis_midi_path, instrument, master_midi_path, output_json, output_j
     # Sort events by time. If two events have the same time, note_off comes before note_on
     events.sort(key=lambda x: (x[1], 0 if x[0] == 'note_off' else 1))
     
-    # Create a new MIDI file for retimed notes
     retimed_midi = mido.MidiFile()
-    retimed_midi.ticks_per_beat = master_midi.ticks_per_beat  # Ensure consistency
+    retimed_midi.ticks_per_beat = master_midi.ticks_per_beat
     track = mido.MidiTrack()
     retimed_midi.tracks.append(track)
     
-    # **Correctly extract all tempo changes with absolute times from master MIDI**
-    tempo_events = []
-    absolute_time = 0.0
-    current_tempo = 500000  # Default tempo
-
-    for track_master in master_midi.tracks:
-        track_time = 0.0
-        for msg in track_master:
-            track_time += mido.tick2second(msg.time, master_midi.ticks_per_beat, current_tempo)
-            if msg.type == 'set_tempo':
-                tempo_events.append((track_time, msg.tempo))
-                current_tempo = msg.tempo
-    
-    # Sort tempo events by time
-    tempo_events.sort(key=lambda x: x[0])
+    # Extract tempo events from master MIDI
+    tempo_events = extract_tempo_events(master_midi)
     
     tempo_idx = 0
     previous_time = 0.0
+    current_tempo = 500000  # Default tempo
     
     for event in events:
         msg_type, event_time, note, velocity = event
@@ -350,15 +296,13 @@ def main(analysis_midi_path, instrument, master_midi_path, output_json, output_j
         while tempo_idx < len(tempo_events) and tempo_events[tempo_idx][0] <= event_time:
             tempo_time, new_tempo = tempo_events[tempo_idx]
             delta = tempo_time - previous_time
-            delta_ticks = int(mido.second2tick(delta, retimed_midi.ticks_per_beat, current_tempo))
+            delta_ticks = max(0, int(mido.second2tick(delta, retimed_midi.ticks_per_beat, current_tempo)))
             track.append(mido.MetaMessage('set_tempo', tempo=new_tempo, time=delta_ticks))
             current_tempo = new_tempo
             previous_time = tempo_time
             tempo_idx += 1
         # Convert absolute time in seconds to ticks
-        delta_time = int(mido.second2tick((event_time - previous_time), retimed_midi.ticks_per_beat, current_tempo))
-        if delta_time < 0:
-            delta_time = 0  # Ensure non-negative delta times
+        delta_time = max(0, int(mido.second2tick((event_time - previous_time), retimed_midi.ticks_per_beat, current_tempo)))
         previous_time = event_time
         msg = mido.Message(msg_type, note=note, velocity=velocity, time=delta_time)
         track.append(msg)
@@ -378,7 +322,7 @@ if __name__ == "__main__":
     parser.add_argument('master_midi', help='Path to the master MIDI file')
     parser.add_argument('output_json', help='Path to output timing JSON file')
     parser.add_argument('output_jpg', help='Path to output visualization JPG file')
-    parser.add_argument('output_midi', help='Path to output retimed MIDI file')  # **New argument**
+    parser.add_argument('output_midi', help='Path to output retimed MIDI file')
     
     args = parser.parse_args()
     main(args.analysis_midi, args.instrument, args.master_midi, args.output_json, args.output_jpg, args.output_midi)
