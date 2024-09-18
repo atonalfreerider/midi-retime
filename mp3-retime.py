@@ -35,6 +35,8 @@ def stretch_audio(y, sr, stretches):
         start_sample = int(start * sr)
         end_sample = int(end * sr)
         segment = y[start_sample:end_sample]
+        # Ensure factor is positive and reasonable
+        factor = max(0.5, min(factor, 2.0))
         stretched_segment = pyrb.time_stretch(segment, sr, factor)
         stretched_audio.append(stretched_segment)
     return np.concatenate(stretched_audio)
@@ -54,7 +56,9 @@ def main(mp3_path, piano_json, orchestra_json, output_wav):
     for i in np.arange(0, total_duration, step):
         start = i
         end = min(i + step, total_duration)
-        factor = 1 / interp_func(i)  # Inverse of speed is the stretch factor
+        speed = interp_func(i)
+        # Use stretch_factor directly instead of inverse
+        factor = speed
         stretches.append((start, end, factor))
     
     warped_audio = stretch_audio(y, sr, stretches)
