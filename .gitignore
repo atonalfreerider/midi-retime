@@ -2,3 +2,5 @@
 *.mid
 *.jpg
 *.pyc
+*.vscode
+/tests

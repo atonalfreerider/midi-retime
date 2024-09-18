@@ -207,7 +207,7 @@ def normalize_timing_dict(timing_dict, master_duration):
     
     return normalized_timing_dict
 
-def main(analysis_midi_path, instrument, master_midi_path, output_json, output_jpg):
+def main(analysis_midi_path, instrument, master_midi_path, output_json, output_jpg, output_midi):
     # Load MIDI files
     master_midi = mido.MidiFile(master_midi_path)
     master_duration = master_midi.length
@@ -233,6 +233,11 @@ def main(analysis_midi_path, instrument, master_midi_path, output_json, output_j
         for track_name, notes in master_tracks.items():
             if "piano" not in track_name.lower():
                 master_notes.extend(notes)
+    
+    # **New Error Handling**
+    if not master_notes:
+        print(f"{RED}Error: No notes found for instrument '{instrument}' in master MIDI file.{RESET}")
+        return
     
     # Log master notes coverage
     max_master_note_time = max(note[2] for note in master_notes) if master_notes else 0
@@ -305,6 +310,63 @@ def main(analysis_midi_path, instrument, master_midi_path, output_json, output_j
                 new_end = end + (note[2] - end) * stretch
                 final_retimed_notes.append((note[0], new_start, note[2]))
     
+    # Collect all note on and off events with their absolute times
+    events = []
+    for note, start, end in final_retimed_notes:
+        events.append(('note_on', start, note, 64))
+        events.append(('note_off', end, note, 64))
+    
+    # Sort events by time. If two events have the same time, note_off comes before note_on
+    events.sort(key=lambda x: (x[1], 0 if x[0] == 'note_off' else 1))
+    
+    # Create a new MIDI file for retimed notes
+    retimed_midi = mido.MidiFile()
+    retimed_midi.ticks_per_beat = master_midi.ticks_per_beat  # Ensure consistency
+    track = mido.MidiTrack()
+    retimed_midi.tracks.append(track)
+    
+    # **Correctly extract all tempo changes with absolute times from master MIDI**
+    tempo_events = []
+    absolute_time = 0.0
+    current_tempo = 500000  # Default tempo
+
+    for track_master in master_midi.tracks:
+        track_time = 0.0
+        for msg in track_master:
+            track_time += mido.tick2second(msg.time, master_midi.ticks_per_beat, current_tempo)
+            if msg.type == 'set_tempo':
+                tempo_events.append((track_time, msg.tempo))
+                current_tempo = msg.tempo
+    
+    # Sort tempo events by time
+    tempo_events.sort(key=lambda x: x[0])
+    
+    tempo_idx = 0
+    previous_time = 0.0
+    
+    for event in events:
+        msg_type, event_time, note, velocity = event
+        # Apply all tempo changes up to the current event_time
+        while tempo_idx < len(tempo_events) and tempo_events[tempo_idx][0] <= event_time:
+            tempo_time, new_tempo = tempo_events[tempo_idx]
+            delta = tempo_time - previous_time
+            delta_ticks = int(mido.second2tick(delta, retimed_midi.ticks_per_beat, current_tempo))
+            track.append(mido.MetaMessage('set_tempo', tempo=new_tempo, time=delta_ticks))
+            current_tempo = new_tempo
+            previous_time = tempo_time
+            tempo_idx += 1
+        # Convert absolute time in seconds to ticks
+        delta_time = int(mido.second2tick((event_time - previous_time), retimed_midi.ticks_per_beat, current_tempo))
+        if delta_time < 0:
+            delta_time = 0  # Ensure non-negative delta times
+        previous_time = event_time
+        msg = mido.Message(msg_type, note=note, velocity=velocity, time=delta_time)
+        track.append(msg)
+    
+    # Save the retimed MIDI file
+    retimed_midi.save(output_midi)
+    print(f"Retimed MIDI saved to {output_midi}")
+    
     # Plot timings
     plot_timings(analysis_notes, master_notes, final_retimed_notes, output_jpg, master_duration)
     print(f"Timing visualization saved to {output_jpg}")
@@ -316,6 +378,7 @@ if __name__ == "__main__":
     parser.add_argument('master_midi', help='Path to the master MIDI file')
     parser.add_argument('output_json', help='Path to output timing JSON file')
     parser.add_argument('output_jpg', help='Path to output visualization JPG file')
+    parser.add_argument('output_midi', help='Path to output retimed MIDI file')  # **New argument**
     
     args = parser.parse_args()
-    main(args.analysis_midi, args.instrument, args.master_midi, args.output_json, args.output_jpg)
+    main(args.analysis_midi, args.instrument, args.master_midi, args.output_json, args.output_jpg, args.output_midi)
