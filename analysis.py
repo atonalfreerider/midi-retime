@@ -3,6 +3,7 @@ import json
 import mido
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize_scalar
+import matplotlib.patches as mpatches
 
 # Add these constants at the beginning of the file
 RED = '\033[91m'
@@ -96,18 +97,29 @@ def recursive_align(notes_analysis, notes_master, timing_dict, start=0, end=None
 def plot_timings(notes_analysis, notes_master, notes_retimed, output_path):
     plt.figure(figsize=(20, 10))
     # Plot original analysis notes
+    y_shift_analysis = 0.1
     for note in notes_analysis:
-        plt.plot([note[1], note[2]], [note[0], note[0]], color='red', alpha=0.5)
+        plt.plot([note[1], note[2]], [note[0] + y_shift_analysis, note[0] + y_shift_analysis], color='red', alpha=0.5)
+
     # Plot master notes
+    y_shift_master = 0.2
     for note in notes_master:
-        plt.plot([note[1], note[2]], [note[0], note[0]], color='blue', alpha=0.5)
+        plt.plot([note[1], note[2]], [note[0] + y_shift_master, note[0] + y_shift_master], color='blue', alpha=0.5)
+
     # Plot retimed analysis notes
+    y_shift_retimed = 0.3
     for note in notes_retimed:
-        plt.plot([note[1], note[2]], [note[0], note[0]], color='green', alpha=0.5)
+        plt.plot([note[1], note[2]], [note[0] + y_shift_retimed, note[0] + y_shift_retimed], color='green', alpha=0.5)
+
+    # Fix legend colors using custom patches to match plotted colors
+    analysis_patch = mpatches.Patch(color='red', label='Analysis Original')
+    master_patch = mpatches.Patch(color='blue', label='Master')
+    retimed_patch = mpatches.Patch(color='green', label='Analysis Retimed')
+    plt.legend(handles=[analysis_patch, master_patch, retimed_patch])
+
     plt.xlabel('Time (seconds)')
     plt.ylabel('Note Pitch')
     plt.title('MIDI Timing Alignment')
-    plt.legend(['Analysis Original', 'Master', 'Analysis Retimed'])
     plt.savefig(output_path)
     plt.close()
 
@@ -198,7 +210,15 @@ def main(analysis_midi_path, instrument, master_midi_path, output_json, output_j
         return
     
     analysis_notes = list(analysis_tracks.values())[0]
-    master_notes = list(master_tracks.values())[0]
+    master_notes = []
+    if instrument.lower() == "piano":
+        for track_name, notes in master_tracks.items():
+            if "piano" in track_name.lower():
+                master_notes.extend(notes)
+    elif instrument.lower() == "orchestra":
+        for track_name, notes in master_tracks.items():
+            if "piano" not in track_name.lower():
+                master_notes.extend(notes)
     
     # Initial stretching
     master_duration = max(note[2] for note in master_notes)
