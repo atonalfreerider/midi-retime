@@ -64,21 +64,34 @@ def optimize_stretch(notes_a, notes_b):
     result = minimize_scalar(objective, bounds=(0.5, 2.0), method='bounded')
     return result.x
 
-def recursive_align(notes_analysis, notes_master, timing_dict, start=0, end=None, depth=0):
+def recursive_align(notes_analysis, notes_master, timing_dict, start=0, end=None, depth=0, max_depth=10):
     if end is None:
         end = max(note[2] for note in notes_master)
-    if (end - start) < 4 or depth > 10:
+    if (end - start) < 4 or depth > max_depth:
         return
     midpoint = (start + end) / 2
     left_analysis = [note for note in notes_analysis if note[1] < midpoint]
     right_analysis = [note for note in notes_analysis if note[2] > midpoint]
     left_master = [note for note in notes_master if note[1] < midpoint]
     right_master = [note for note in notes_master if note[2] > midpoint]
-    stretch_left = optimize_stretch(left_master, left_analysis)
-    stretch_right = optimize_stretch(right_master, right_analysis)
+    
+    # Prevent division by zero or empty lists
+    if not left_analysis or not left_master:
+        stretch_left = 1.0
+    else:
+        stretch_left = optimize_stretch(left_master, left_analysis)
+    
+    if not right_analysis or not right_master:
+        stretch_right = 1.0
+    else:
+        stretch_right = optimize_stretch(right_master, right_analysis)
+    
+    # Record the stretch factors at the midpoint
     timing_dict[midpoint] = (stretch_left + stretch_right) / 2
-    recursive_align(left_analysis, left_master, timing_dict, start, midpoint, depth+1)
-    recursive_align(right_analysis, right_master, timing_dict, midpoint, end, depth+1)
+    
+    # Continue recursion for left and right segments
+    recursive_align(left_analysis, left_master, timing_dict, start, midpoint, depth+1, max_depth)
+    recursive_align(right_analysis, right_master, timing_dict, midpoint, end, depth+1, max_depth)
 
 def plot_timings(notes_analysis, notes_master, notes_retimed, output_path):
     plt.figure(figsize=(20, 10))
@@ -103,15 +116,8 @@ def validate_timing_dict(timing_dict, master_duration):
     sorted_timing = dict(sorted(timing_dict.items(), key=lambda item: float(item[0])))
     
     # Initialize variables
-    previous_time = 0
+    previous_time = 0.0
     total_adjusted_duration = 0.0
-    
-    for start_time, stretch_factor in sorted_timing.items():
-        start_time = float(start_time)
-        if start_time < previous_time:
-            print(f"{RED}Error: Timing dictionary is not sorted properly.{RESET}")
-            return False
-        previous_time = start_time
     
     # Add an end point at master_duration if not present
     if str(master_duration) not in sorted_timing:
@@ -120,12 +126,14 @@ def validate_timing_dict(timing_dict, master_duration):
     # Re-sort after adding end point
     sorted_timing = dict(sorted(sorted_timing.items(), key=lambda item: float(item[0])))
     
-    # Calculate total adjusted duration
     keys = list(sorted_timing.keys())
+    stretch_factors = list(sorted_timing.values())
+    
+    # Calculate total adjusted duration
     for i in range(len(keys) - 1):
         start = float(keys[i])
         end = float(keys[i + 1])
-        stretch = float(sorted_timing[keys[i]])
+        stretch = float(stretch_factors[i])
         section_duration = end - start
         adjusted_duration = section_duration * stretch
         total_adjusted_duration += adjusted_duration
@@ -135,39 +143,122 @@ def validate_timing_dict(timing_dict, master_duration):
         print(f"{WHITE}Validation Passed: Adjusted duration matches master duration.{RESET}")
         return True
     else:
-        print(f"{RED}Validation Failed: Adjusted duration ({total_adjusted_duration}s) does not match master duration ({master_duration}s).{RESET}")
+        discrepancy = total_adjusted_duration - master_duration
+        print(f"{RED}Validation Failed: Adjusted duration ({total_adjusted_duration:.2f}s) does not match master duration ({master_duration:.2f}s). Discrepancy: {discrepancy:.2f}s{RESET}")
         return False
+
+def normalize_timing_dict(timing_dict, master_duration):
+    # Calculate current total adjusted duration
+    sorted_timing = dict(sorted(timing_dict.items(), key=lambda item: float(item[0])))
+    keys = list(sorted_timing.keys())
+    stretch_factors = list(sorted_timing.values())
+    
+    # Add end point if not present
+    if str(master_duration) not in sorted_timing:
+        sorted_timing[str(master_duration)] = 1.0
+    
+    keys = list(sorted_timing.keys())
+    stretch_factors = list(sorted_timing.values())
+    
+    total_adjusted_duration = 0.0
+    durations = []
+    stretches = []
+    for i in range(len(keys) - 1):
+        start = float(keys[i])
+        end = float(keys[i + 1])
+        stretch = float(stretch_factors[i])
+        section_duration = end - start
+        adjusted_duration = section_duration * stretch
+        durations.append(adjusted_duration)
+        stretches.append(stretch)
+        total_adjusted_duration += adjusted_duration
+    
+    # Calculate normalization factor
+    normalization_factor = master_duration / total_adjusted_duration if total_adjusted_duration != 0 else 1.0
+    
+    # Normalize stretch factors
+    normalized_timing_dict = {}
+    for i in range(len(keys) - 1):
+        start = float(keys[i])
+        normalized_stretch = stretch_factors[i] * normalization_factor
+        normalized_timing_dict[start] = normalized_stretch
+    
+    return normalized_timing_dict
 
 def main(analysis_midi_path, instrument, master_midi_path, output_json, output_jpg):
     # Load MIDI files
     analysis_tracks = load_midi(analysis_midi_path)
     master_tracks = load_midi(master_midi_path)
+    
+    if not analysis_tracks:
+        print(f"{RED}Error: No notes found in analysis MIDI file.{RESET}")
+        return
+    if not master_tracks:
+        print(f"{RED}Error: No notes found in master MIDI file.{RESET}")
+        return
+    
     analysis_notes = list(analysis_tracks.values())[0]
     master_notes = list(master_tracks.values())[0]
     
     # Initial stretching
     master_duration = max(note[2] for note in master_notes)
     analysis_duration = max(note[2] for note in analysis_notes)
-    initial_stretch = master_duration / analysis_duration
+    initial_stretch = master_duration / analysis_duration if analysis_duration > 0 else 1.0
     retimed_notes = stretch_notes(analysis_notes, initial_stretch)
     
     # Initialize timing dictionary
-    timing_dict = {0: initial_stretch}
+    timing_dict = {0.0: initial_stretch}
     
     # Recursive alignment
-    recursive_align(retimed_notes, master_notes, timing_dict)
+    recursive_align(retimed_notes, master_notes, timing_dict, start=0.0, end=master_duration, depth=0, max_depth=10)
+    
+    # Normalize timing dictionary to ensure total duration matches master_duration
+    timing_dict = normalize_timing_dict(timing_dict, master_duration)
     
     # Validate timing dictionary
-    if not validate_timing_dict(timing_dict, master_duration):
+    if validate_timing_dict(timing_dict, master_duration):
+        print(f"{WHITE}Timing dictionary validation succeeded.{RESET}")
+    else:
         print(f"{RED}Warning: Timing dictionary validation failed.{RESET}")
     
     # Save timing dictionary
     with open(output_json, 'w') as f:
-        json.dump(timing_dict, f, indent=4)
+        # Convert keys back to strings for JSON compatibility
+        json.dump({str(k): v for k, v in timing_dict.items()}, f, indent=4)
+    print(f"Timing adjustments saved to {output_json}")
+    
+    # Apply stretch factors to analysis notes
+    final_retimed_notes = []
+    sorted_timing = dict(sorted(timing_dict.items(), key=lambda item: float(item[0])))
+    keys = list(sorted_timing.keys())
+    stretch_factors = list(sorted_timing.values())
+    
+    for i in range(len(keys) - 1):
+        start = float(keys[i])
+        end = float(keys[i + 1])
+        stretch = float(stretch_factors[i])
+        for note in analysis_notes:
+            if note[1] >= start and note[2] <= end:
+                new_start = start + (note[1] - start) * stretch
+                new_end = start + (note[2] - start) * stretch
+                final_retimed_notes.append((note[0], new_start, new_end))
+            elif note[1] < start and note[2] > end:
+                # Note spans the entire segment
+                new_start = start + (note[1] - start) * stretch
+                new_end = end + (note[2] - end) * stretch
+                final_retimed_notes.append((note[0], new_start, new_end))
+            elif note[1] < start and note[2] > start and note[2] <= end:
+                # Note starts before the segment and ends within
+                new_end = start + (note[2] - start) * stretch
+                final_retimed_notes.append((note[0], note[1], new_end))
+            elif note[1] >= start and note[1] < end and note[2] > end:
+                # Note starts within the segment and ends after
+                new_start = start + (note[1] - start) * stretch
+                new_end = end + (note[2] - end) * stretch
+                final_retimed_notes.append((note[0], new_start, note[2]))
     
     # Plot timings
-    plot_timings(analysis_notes, master_notes, retimed_notes, output_jpg)
-    print(f"Timing adjustments saved to {output_json}")
+    plot_timings(analysis_notes, master_notes, final_retimed_notes, output_jpg)
     print(f"Timing visualization saved to {output_jpg}")
 
 if __name__ == "__main__":
