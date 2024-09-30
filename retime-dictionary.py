@@ -22,7 +22,7 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     ticks_per_beat = midi.ticks_per_beat
     tempo = 500000  # Default tempo (microseconds per beat)
     time_signature = (4, 4)  # Default time signature
-    ticks_per_measure = ticks_per_beat * 4  # Default 4/4 time signature
+    ticks_per_measure = ticks_per_beat * time_signature[0]  # Initialize based on default time signature
 
     # Combine all tracks into a single list of messages, sorted by their absolute time
     all_messages = []
@@ -31,15 +31,24 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
         for msg in track:
             track_ticks += msg.time
             all_messages.append((track_ticks, msg))
-    all_messages.sort(key=lambda x: x[0])
+    
+    # Sort messages by tick, then by message type priority
+    def sort_key(item):
+        ticks, msg = item
+        if msg.type == 'time_signature':
+            return (ticks, 0)
+        elif msg.type == 'set_tempo':
+            return (ticks, 1)
+        else:
+            return (ticks, 2)
+    
+    all_messages.sort(key=sort_key)
 
     cumulative_time = 0
     cumulative_ticks = 0
     measure_start_ticks = 0
     current_measure = 1
     midi_timings = {}
-    first_note_on_time = None
-    pending_time_signature = None
     total_ticks = max(msg[0] for msg in all_messages)
 
     for msg_ticks, msg in all_messages:
@@ -47,38 +56,26 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
         delta_time = mido.tick2second(delta_ticks, ticks_per_beat, tempo)
         cumulative_time += delta_time
         cumulative_ticks = msg_ticks
-
-        if msg.type == 'note_on' and msg.velocity > 0 and first_note_on_time is None:
-            first_note_on_time = cumulative_time
-
+        
         if msg.type == 'set_tempo':
             tempo = msg.tempo
         elif msg.type == 'time_signature':
-            pending_time_signature = (msg.numerator, msg.denominator)
+            time_signature = (msg.numerator, msg.denominator)
+            ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
+            # Recalculate the current measure start ticks
+            measure_start_ticks = ((cumulative_ticks - 1) // ticks_per_measure) * ticks_per_measure
 
-        # Check if we've crossed a measure boundary
+        # Check if we've crossed a measure boundary        
         while cumulative_ticks - measure_start_ticks >= ticks_per_measure:
             measure_start_ticks += ticks_per_measure
-            measure_start_time = cumulative_time - delta_time + mido.tick2second(measure_start_ticks - (cumulative_ticks - delta_ticks), ticks_per_beat, tempo)
+            measure_start_time = cumulative_time - mido.tick2second(cumulative_ticks - measure_start_ticks, ticks_per_beat, tempo)
             midi_timings[current_measure] = measure_start_time
             current_measure += 1
-
-            # Apply pending time signature change at the start of the new measure
-            # BUG: the measure in which the time signature change occurs has an incorrect start time. the start time was calculated with the old time signature.
-            # BUG: however, the time values for the other measures are correctly calculated based on the new time signature.            
-            if pending_time_signature:
-                time_signature = pending_time_signature
-                ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
-                pending_time_signature = None
 
     # Capture the last measure if it's not already included
     if measure_start_ticks < total_ticks:
         last_measure_time = cumulative_time + mido.tick2second(total_ticks - cumulative_ticks, ticks_per_beat, tempo)
         midi_timings[current_measure] = last_measure_time
-
-    # Adjust timings so that measure 1 starts at 0 seconds
-    time_offset = midi_timings[1] if 1 in midi_timings else (first_note_on_time or 0)
-    midi_timings = {measure: max(0, time - time_offset) for measure, time in midi_timings.items()}
 
     return midi_timings
 
