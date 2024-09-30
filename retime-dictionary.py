@@ -24,66 +24,54 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     time_signature = (4, 4)  # Default time signature
     ticks_per_measure = ticks_per_beat * time_signature[0]
 
-    # Collect set_tempo and time_signature messages across all tracks
-    tempo_time_sig_events = []
+    # Collect all MIDI events
+    events = []
     for track in midi.tracks:
         absolute_tick = 0
         for msg in track:
             absolute_tick += msg.time
-            if msg.type in ['set_tempo', 'time_signature']:
-                tempo_time_sig_events.append((absolute_tick, msg))
+            events.append((absolute_tick, msg))
 
     # Sort events by their absolute tick count
-    tempo_time_sig_events.sort(key=lambda x: x[0])    
+    events.sort(key=lambda x: x[0])
 
     midi_timings = {1: 0.0}  # Measure 1 always starts at t=0
-    current_measure = 2  # Start from measure 2
+    current_measure = 1
     current_time = 0.0
     current_ticks = 0
+    measure_start_ticks = 0
 
-    for event_time, msg in tempo_time_sig_events:
+    for event_ticks, msg in events:
+        # Process tempo and time signature changes
         if msg.type == 'set_tempo':
+            # Calculate time up to this tempo change
+            delta_ticks = event_ticks - current_ticks
+            current_time += (delta_ticks * tempo) / (1000000 * ticks_per_beat)
+            current_ticks = event_ticks
             tempo = msg.tempo
         elif msg.type == 'time_signature':
             time_signature = (msg.numerator, msg.denominator)
             ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
 
-        # Process all other MIDI messages up to this point
-        while current_ticks < event_time:
-            if current_ticks >= ticks_per_measure:
-                # Calculate and store the start time for the current measure
-                midi_timings[current_measure] = current_time
-
-                # Calculate time to the next measure
-                remaining_ticks = ticks_per_measure - (current_ticks % ticks_per_measure)
-                next_measure_time = current_time + (remaining_ticks * tempo) / (1000000 * ticks_per_beat)
-
-                current_measure += 1
-                current_ticks += remaining_ticks
-                current_time = next_measure_time
-            else:
-                # Update current time and ticks
-                seconds_per_tick = tempo / (1000000 * ticks_per_beat)
-                current_time += seconds_per_tick
-                current_ticks += 1
-
-    # Process any remaining ticks after the last tempo/time signature event
-    while current_ticks < midi.length:
-        if current_ticks >= ticks_per_measure:
-            midi_timings[current_measure] = current_time
-            remaining_ticks = ticks_per_measure - (current_ticks % ticks_per_measure)
-            next_measure_time = current_time + (remaining_ticks * tempo) / (1000000 * ticks_per_beat)
+        # Check if we've reached or passed a measure boundary
+        while current_ticks - measure_start_ticks >= ticks_per_measure:
             current_measure += 1
-            current_ticks += remaining_ticks
-            current_time = next_measure_time
-        else:
-            seconds_per_tick = tempo / (1000000 * ticks_per_beat)
-            current_time += seconds_per_tick
-            current_ticks += 1
+            measure_start_time = current_time + ((measure_start_ticks + ticks_per_measure - current_ticks) * tempo) / (1000000 * ticks_per_beat)
+            midi_timings[current_measure] = measure_start_time
+            measure_start_ticks += ticks_per_measure
 
-    # Remove the last measure if it's incomplete
-    if current_measure in midi_timings and current_ticks % ticks_per_measure != 0:
-        del midi_timings[current_measure]
+        # Update current time
+        if current_ticks < event_ticks:
+            delta_ticks = event_ticks - current_ticks
+            current_time += (delta_ticks * tempo) / (1000000 * ticks_per_beat)
+            current_ticks = event_ticks
+
+    # Process any remaining ticks after the last event
+    while current_ticks - measure_start_ticks >= ticks_per_measure:
+        current_measure += 1
+        measure_start_time = current_time + ((measure_start_ticks + ticks_per_measure - current_ticks) * tempo) / (1000000 * ticks_per_beat)
+        midi_timings[current_measure] = measure_start_time
+        measure_start_ticks += ticks_per_measure
 
     return midi_timings
 
