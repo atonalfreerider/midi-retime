@@ -40,12 +40,13 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     midi_timings = {}
     first_note_on_time = None
     pending_time_signature = None
+    total_ticks = max(msg[0] for msg in all_messages)
 
-    for total_ticks, msg in all_messages:
-        delta_ticks = total_ticks - cumulative_ticks
+    for msg_ticks, msg in all_messages:
+        delta_ticks = msg_ticks - cumulative_ticks
         delta_time = mido.tick2second(delta_ticks, ticks_per_beat, tempo)
         cumulative_time += delta_time
-        cumulative_ticks = total_ticks
+        cumulative_ticks = msg_ticks
 
         if msg.type == 'note_on' and msg.velocity > 0 and first_note_on_time is None:
             first_note_on_time = cumulative_time
@@ -67,6 +68,11 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
                 time_signature = pending_time_signature
                 ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
                 pending_time_signature = None
+
+    # Capture the last measure if it's not already included
+    if measure_start_ticks < total_ticks:
+        last_measure_time = cumulative_time + mido.tick2second(total_ticks - cumulative_ticks, ticks_per_beat, tempo)
+        midi_timings[current_measure] = last_measure_time
 
     # Adjust timings so that measure 1 starts at 0 seconds
     time_offset = midi_timings[1] if 1 in midi_timings else (first_note_on_time or 0)
