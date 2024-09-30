@@ -65,31 +65,24 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
 
     return midi_timings
 
-def create_stretching_map(wav_timings: Dict[int, float], midi_timings: Dict[int, float]) -> Dict[float, float]:
+def create_stretching_map(wav_timings: Dict[int, float], midi_timings: Dict[int, float]) -> Dict[float, Tuple[float, float]]:
     stretching_map = {}
     wav_measures = sorted(wav_timings.keys())
     midi_measures = sorted(midi_timings.keys())
     
-    for i in range(len(wav_measures) - 1):
-        start_measure = wav_measures[i]
-        end_measure = wav_measures[i + 1]
+    for wav_measure in wav_measures:
+        wav_time = wav_timings[wav_measure]
         
-        wav_start = wav_timings[start_measure]
-        wav_end = wav_timings[end_measure]
+        # Find the corresponding MIDI measure
+        midi_measure = next((m for m in midi_measures if m >= wav_measure), None)
         
-        # Find the corresponding MIDI measures
-        midi_start_measure = next((m for m in midi_measures if m >= start_measure), None)
-        midi_end_measure = next((m for m in midi_measures if m >= end_measure), None)
-        
-        if midi_start_measure is None or midi_end_measure is None:
-            print(f"Warning: Could not find corresponding MIDI measures for WAV measures {start_measure} to {end_measure}")
+        if midi_measure is None:
+            print(f"Warning: Could not find corresponding MIDI measure for WAV measure {wav_measure}")
             continue
         
-        midi_start = midi_timings[midi_start_measure]
-        midi_end = midi_timings[midi_end_measure]
+        midi_time = midi_timings[midi_measure]
         
-        stretch_factor = (midi_end - midi_start) / (wav_end - wav_start)
-        stretching_map[wav_start] = (midi_start, stretch_factor)
+        stretching_map[wav_time] = (midi_time, 1)  # We'll calculate stretch factors in retime_audio
     
     return stretching_map
 
@@ -103,28 +96,36 @@ def retime_audio(input_wav: str, stretching_map: Dict[float, Tuple[float, float]
     # Sort the stretching map by original time
     sorted_stretch_points = sorted(stretching_map.items())
     
-    # Initialize arrays for the new time points
-    new_times = []
-    original_times = []
+    # Create a new time array for the stretched audio
+    new_time = np.zeros_like(time)
     
-    # Process each stretch point
-    for i, (orig_time, (new_time, _)) in enumerate(sorted_stretch_points):
-        new_times.append(new_time)
-        original_times.append(orig_time)
+    # Interpolate the new time array
+    for i in range(len(sorted_stretch_points) - 1):
+        start_time, (new_start_time, _) = sorted_stretch_points[i]
+        end_time, (new_end_time, _) = sorted_stretch_points[i + 1]
+        
+        mask = (time >= start_time) & (time < end_time)
+        new_time[mask] = np.interp(time[mask], [start_time, end_time], [new_start_time, new_end_time])
     
-    # Add the end of the audio if it's not in the stretching map
-    if time[-1] > original_times[-1]:
-        original_times.append(time[-1])
-        new_times.append(new_times[-1] + (time[-1] - original_times[-2]) * stretching_map[sorted_stretch_points[-1][0]][1])
+    # Handle the last segment
+    last_start_time, (last_new_start_time, _) = sorted_stretch_points[-1]
+    mask = time >= last_start_time
+    new_time[mask] = np.interp(time[mask], [last_start_time, time[-1]], [last_new_start_time, new_time[-1]])
     
-    # Create the new time array using piecewise linear interpolation
-    new_time = np.interp(time, original_times, new_times)
+    # Calculate the new sample rate
+    target_sr = sr * (len(new_time) / len(time))
     
-    # Resample the audio
-    y_retimed = librosa.resample(y, orig_sr=sr, target_sr=sr * (len(new_time) / len(time)))
+    # Perform the time stretching using resample
+    y_retimed = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
+    
+    # Ensure the output duration matches the MIDI duration
+    target_duration = sorted_stretch_points[-1][1][0]  # Last MIDI time
+    current_duration = len(y_retimed) / target_sr
+    if not np.isclose(current_duration, target_duration):
+        y_retimed = librosa.effects.time_stretch(y_retimed, rate=current_duration / target_duration)
     
     # Save the retimed audio
-    sf.write(output_wav, y_retimed, sr)
+    sf.write(output_wav, y_retimed, int(target_sr))
 
 def main():
     parser = argparse.ArgumentParser(description="Retime a WAV file based on MIDI timing.")
