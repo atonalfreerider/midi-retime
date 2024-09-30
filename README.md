@@ -2,6 +2,15 @@
 
 The purpose of this tool is to retime a MIDI file to match the tempo of another MIDI file.
 
+Master mid vs Input wav:
+|-----|-----|----------|---|
+|---|-----|-------|---|
+
+
+Master mid vs retimed wav:
+|-----|-----|----------|---|
+|-----|-----|----------|---|
+
 The midi file that will be retimed, may not necessarily have the same note structure as the file that it is being retimed to. The source of the midi file might be from a MIDI recorder, or from a MIDI editor. The MIDI file that it is being retimed to, might be a MIDI file that is intended to be the "master", that other MIDI files are trying to match. 
 
 The tool is flexible in that it can retime a MIDI file to match the tempo of another MIDI file, even if the two MIDI files have different note structure. 

@@ -4,6 +4,7 @@ import librosa
 import soundfile as sf
 import mido
 from typing import Dict, Tuple
+from scipy import interpolate
 
 def parse_timing_dict(timing_file: str) -> Dict[int, float]:
     timing_dict = {}
@@ -121,53 +122,59 @@ def retime_audio(input_wav: str, stretching_map: Dict[float, Tuple[float, float]
     # Sort the stretching map by original time
     sorted_stretch_points = sorted(stretching_map.items())
     
-    # Create a new time array for the stretched audio
-    new_time = np.zeros_like(time)
+    # Separate the original and new time points
+    orig_times, new_times = zip(*sorted_stretch_points)
+    new_times = [nt[0] for nt in new_times]  # Extract just the time value, not the tuple
     
-    # Initialize cumulative stretch factor and time offset
-    cumulative_stretch = 1.0
-    time_offset = 0.0
+    # Create a piecewise linear interpolation function
+    time_map = interpolate.interp1d(orig_times, new_times, kind='linear', bounds_error=False, fill_value='extrapolate')
     
-    # Interpolate the new time array
+    # Apply the time mapping to all sample times
+    new_time = time_map(time)
+    
+    # Calculate the instantaneous stretch factor for each sample
+    stretch_factors = np.diff(new_time) / np.diff(time)
+    stretch_factors = np.insert(stretch_factors, 0, stretch_factors[0])  # Pad the first element
+    
+    # Initialize the output audio array
+    y_retimed = np.zeros(int(new_time[-1] * sr))
+    
+    # Perform the time stretching using a phase vocoder
     for i in range(len(sorted_stretch_points) - 1):
         start_time, (new_start_time, _) = sorted_stretch_points[i]
         end_time, (new_end_time, _) = sorted_stretch_points[i + 1]
         
-        # Calculate the stretch factor for this segment
-        segment_duration = end_time - start_time
-        new_segment_duration = new_end_time - new_start_time
-        stretch_factor = new_segment_duration / segment_duration
+        # Extract the segment
+        segment_mask = (time >= start_time) & (time < end_time)
+        segment = y[segment_mask]
         
-        # Apply the stretch to this segment
-        mask = (time >= start_time) & (time < end_time)
-        segment_time = time[mask] - start_time
-        new_time[mask] = time_offset + (segment_time * stretch_factor * cumulative_stretch)
+        # Calculate the average stretch factor for this segment
+        avg_stretch = (new_end_time - new_start_time) / (end_time - start_time)
         
-        # Update cumulative stretch and time offset
-        time_offset = new_time[mask][-1] if np.any(mask) else time_offset
-        cumulative_stretch *= stretch_factor
+        # Time-stretch the segment
+        stretched_segment = librosa.effects.time_stretch(segment, rate=1/avg_stretch)
+        
+        # Calculate the new start and end indices
+        new_start_idx = int(new_start_time * sr)
+        new_end_idx = int(new_end_time * sr)
+        
+        # Ensure the stretched segment fits exactly in the allocated space
+        stretched_segment = librosa.util.fix_length(stretched_segment, size=new_end_idx - new_start_idx)
+        
+        # Insert the stretched segment into the output array
+        y_retimed[new_start_idx:new_end_idx] = stretched_segment
     
     # Handle the last segment
     last_start_time, (last_new_start_time, _) = sorted_stretch_points[-1]
-    mask = time >= last_start_time
-    segment_time = time[mask] - last_start_time
-    new_time[mask] = time_offset + (segment_time * cumulative_stretch)
+    last_segment = y[time >= last_start_time]
+    last_stretch = (new_time[-1] - last_new_start_time) / (time[-1] - last_start_time)
+    stretched_last_segment = librosa.effects.time_stretch(last_segment, rate=1/last_stretch)
     
-    # Perform the time stretching using librosa
-    y_retimed = librosa.effects.time_stretch(y, rate=len(time)/len(new_time))
-    
-    # Resample to match the new timing
-    target_sr = sr * (len(new_time) / len(time))
-    y_retimed = librosa.resample(y_retimed, orig_sr=sr, target_sr=target_sr)
-    
-    # Ensure the output duration matches the MIDI duration
-    target_duration = sorted_stretch_points[-1][1][0]  # Last MIDI time
-    current_duration = len(y_retimed) / target_sr
-    if not np.isclose(current_duration, target_duration):
-        y_retimed = librosa.effects.time_stretch(y_retimed, rate=current_duration / target_duration)
+    last_start_idx = int(last_new_start_time * sr)
+    y_retimed[last_start_idx:] = librosa.util.fix_length(stretched_last_segment, size=len(y_retimed) - last_start_idx)
     
     # Save the retimed audio
-    sf.write(output_wav, y_retimed, int(target_sr))
+    sf.write(output_wav, y_retimed, sr)
 
 def main():
     parser = argparse.ArgumentParser(description="Retime a WAV file based on MIDI timing.")
