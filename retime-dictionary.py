@@ -39,11 +39,16 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     measure_start_ticks = 0
     current_measure = 1
     midi_timings = {}
+    first_note_on_time = None
 
     for total_ticks, msg in all_messages:
         delta_ticks = total_ticks - cumulative_ticks
-        cumulative_time += mido.tick2second(delta_ticks, ticks_per_beat, tempo)
+        delta_time = mido.tick2second(delta_ticks, ticks_per_beat, tempo)
+        cumulative_time += delta_time
         cumulative_ticks = total_ticks
+
+        if msg.type == 'note_on' and msg.velocity > 0 and first_note_on_time is None:
+            first_note_on_time = cumulative_time
 
         if msg.type == 'set_tempo':
             tempo = msg.tempo
@@ -54,13 +59,13 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
         # Check if we've crossed a measure boundary
         while cumulative_ticks - measure_start_ticks >= ticks_per_measure:
             measure_start_ticks += ticks_per_measure
-            measure_start_time = cumulative_time - mido.tick2second(cumulative_ticks - measure_start_ticks, ticks_per_beat, tempo)
+            measure_start_time = cumulative_time - delta_time + mido.tick2second(measure_start_ticks - (cumulative_ticks - delta_ticks), ticks_per_beat, tempo)
             midi_timings[current_measure] = measure_start_time
             current_measure += 1
 
-    # Add the last measure if it's not already included
-    if current_measure not in midi_timings:
-        midi_timings[current_measure] = cumulative_time
+    # Adjust timings so that measure 1 starts at 0 seconds
+    time_offset = midi_timings[1] if 1 in midi_timings else (first_note_on_time or 0)
+    midi_timings = {measure: max(0, time - time_offset) for measure, time in midi_timings.items()}
 
     return midi_timings
 
