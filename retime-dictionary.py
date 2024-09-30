@@ -64,6 +64,8 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
             current_measure += 1
 
             # Apply pending time signature change at the start of the new measure
+            # BUG: the measure in which the time signature change occurs has an incorrect start time. the start time was calculated with the old time signature.
+            # BUG: however, the time values for the other measures are correctly calculated based on the new time signature.            
             if pending_time_signature:
                 time_signature = pending_time_signature
                 ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
