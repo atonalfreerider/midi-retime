@@ -4,6 +4,7 @@ import librosa
 import soundfile as sf
 import mido
 from typing import Dict, Tuple
+import matplotlib.pyplot as plt
 
 def parse_timing_dict(timing_file: str) -> Dict[int, float]:
     timing_dict = {}
@@ -100,6 +101,56 @@ def create_stretching_map(wav_timings: Dict[int, float], midi_timings: Dict[int,
     
     return stretching_map
 
+def create_timing_graph(midi_timings: Dict[int, float], wav_timings: Dict[int, float], output_jpg: str):
+    plt.figure(figsize=(12, 8))
+    
+    # Set up the plot
+    ax = plt.gca()
+    ax.invert_yaxis()
+    ax.set_ylim(max(max(midi_timings.values()), max(wav_timings.values())) * 1.1, 0)
+    
+    # Plot MIDI timings
+    midi_measures = sorted(midi_timings.keys())
+    midi_times = [midi_timings[m] for m in midi_measures]
+    plt.plot([-0.2] * len(midi_times), midi_times, 'r-', label='MIDI')
+    
+    # Plot WAV timings
+    wav_measures = sorted(wav_timings.keys())
+    wav_times = [wav_timings[m] for m in wav_measures]
+    plt.plot([1.2] * len(wav_times), wav_times, 'g-', label='WAV')
+    
+    # Add hash marks and labels only for WAV measures (from txt file)
+    for measure in wav_measures:
+        midi_time = midi_timings.get(measure, None)
+        wav_time = wav_timings[measure]
+        
+        # MIDI hash mark and label (only if measure exists in MIDI)
+        if midi_time is not None:
+            plt.plot([-0.25, -0.15], [midi_time, midi_time], 'r-')
+            plt.text(-0.3, midi_time, f'M{measure}', ha='right', va='center')
+        
+        # WAV hash mark and label
+        plt.plot([1.15, 1.25], [wav_time, wav_time], 'g-')
+        plt.text(1.3, wav_time, f'M{measure}', ha='left', va='center')
+        
+        # Draw skew line and add ratio label
+        if midi_time is not None:
+            plt.plot([-0.2, 1.2], [midi_time, wav_time], 'm-', alpha=0.5)
+            
+            # Calculate and display the ratio
+            ratio = midi_time / wav_time if wav_time != 0 else float('inf')
+            mid_x = 0.5
+            mid_y = (midi_time + wav_time) / 2
+            plt.text(mid_x, mid_y, f'{ratio:.2f}', ha='center', va='center', bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+    
+    plt.title('MIDI vs WAV Timing Comparison')
+    plt.legend(loc='lower right')
+    plt.axis('off')
+    
+    # Save the graph
+    plt.savefig(output_jpg, dpi=300, bbox_inches='tight')
+    plt.close()
+
 def retime_audio(input_wav: str, stretching_map: Dict[float, Tuple[float, float]], output_wav: str):
     # Load the audio file
     y, sr = librosa.load(input_wav, sr=None)
@@ -161,6 +212,11 @@ def main():
     if not stretching_map:
         print("Error: Could not create stretching map. Please check if WAV and MIDI timings are compatible.")
         return
+
+    # Generate the timing graph
+    output_jpg = args.output_wav.rsplit('.', 1)[0] + '_timing_graph.jpg'
+    create_timing_graph(midi_timings, wav_timings, output_jpg)
+    print(f"Timing graph saved as {output_jpg}")
 
     retime_audio(args.input_wav, stretching_map, args.output_wav)
 
