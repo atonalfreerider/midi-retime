@@ -22,60 +22,66 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     ticks_per_beat = midi.ticks_per_beat
     tempo = 500000  # Default tempo (microseconds per beat)
     time_signature = (4, 4)  # Default time signature
-    ticks_per_measure = ticks_per_beat * time_signature[0]  # Initialize based on default time signature
+    ticks_per_measure = ticks_per_beat * time_signature[0]
 
-    # Combine all tracks into a single list of messages, sorted by their absolute time
-    all_messages = []
+    # Merge set_tempo and time_signature messages across tracks
+    tempo_time_sig_events = []
     for track in midi.tracks:
-        track_ticks = 0
         for msg in track:
-            track_ticks += msg.time
-            all_messages.append((track_ticks, msg))
+            if msg.type in ['set_tempo', 'time_signature']:
+                tempo_time_sig_events.append((msg.time, msg))
     
-    # Sort messages by tick, then by message type priority
-    def sort_key(item):
-        ticks, msg = item
-        if msg.type == 'time_signature':
-            return (ticks, 0)
-        elif msg.type == 'set_tempo':
-            return (ticks, 1)
-        else:
-            return (ticks, 2)
-    
-    all_messages.sort(key=sort_key)
+    # Sort events by their time
+    tempo_time_sig_events.sort(key=lambda x: x[0])
 
-    cumulative_time = 0
-    cumulative_ticks = 0
-    measure_start_ticks = 0
-    current_measure = 1
     midi_timings = {}
-    total_ticks = max(msg[0] for msg in all_messages)
+    current_measure = 1
+    current_time = 0.0
+    current_ticks = 0
 
-    for msg_ticks, msg in all_messages:
-        delta_ticks = msg_ticks - cumulative_ticks
-        delta_time = mido.tick2second(delta_ticks, ticks_per_beat, tempo)
-        cumulative_time += delta_time
-        cumulative_ticks = msg_ticks
-        
+    for event_time, msg in tempo_time_sig_events:
         if msg.type == 'set_tempo':
             tempo = msg.tempo
         elif msg.type == 'time_signature':
             time_signature = (msg.numerator, msg.denominator)
             ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
-            # Recalculate the current measure start ticks
-            measure_start_ticks = ((cumulative_ticks - 1) // ticks_per_measure) * ticks_per_measure
 
-        # Check if we've crossed a measure boundary        
-        while cumulative_ticks - measure_start_ticks >= ticks_per_measure:
-            measure_start_ticks += ticks_per_measure
-            measure_start_time = cumulative_time - mido.tick2second(cumulative_ticks - measure_start_ticks, ticks_per_beat, tempo)
-            midi_timings[current_measure] = measure_start_time
+        # Process all other MIDI messages up to this point
+        while current_ticks < event_time:
+            if current_ticks + 1 >= ticks_per_measure:
+                # Calculate and store the start time for the current measure
+                midi_timings[current_measure] = current_time
+
+                # Calculate time to the next measure
+                remaining_ticks = ticks_per_measure - current_ticks
+                next_measure_time = current_time + (remaining_ticks * tempo) / (1000000 * ticks_per_beat)
+
+                current_measure += 1
+                current_ticks = 0  # Reset current_ticks to 0
+                current_time = next_measure_time
+            else:
+                # Update current time and ticks
+                seconds_per_tick = tempo / (1000000 * ticks_per_beat)
+                current_time += seconds_per_tick
+                current_ticks += 1
+
+    # Process any remaining ticks after the last tempo/time signature event
+    while current_ticks < midi.length:
+        if current_ticks + 1 >= ticks_per_measure:
+            midi_timings[current_measure] = current_time
+            remaining_ticks = ticks_per_measure - current_ticks
+            next_measure_time = current_time + (remaining_ticks * tempo) / (1000000 * ticks_per_beat)
             current_measure += 1
+            current_ticks = 0  # Reset current_ticks to 0
+            current_time = next_measure_time
+        else:
+            seconds_per_tick = tempo / (1000000 * ticks_per_beat)
+            current_time += seconds_per_tick
+            current_ticks += 1
 
-    # Capture the last measure if it's not already included
-    if measure_start_ticks < total_ticks:
-        last_measure_time = cumulative_time + mido.tick2second(total_ticks - cumulative_ticks, ticks_per_beat, tempo)
-        midi_timings[current_measure] = last_measure_time
+    # Add the last measure if it's not already included
+    if current_measure not in midi_timings:
+        midi_timings[current_measure] = current_time
 
     return midi_timings
 
