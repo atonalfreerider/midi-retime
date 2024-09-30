@@ -159,24 +159,41 @@ def retime_audio(input_wav: str, stretching_map: Dict[float, Tuple[float, float]
     # Create a new time array for the stretched audio
     new_time = np.zeros_like(time)
     
+    # Initialize cumulative stretch factor and time offset
+    cumulative_stretch = 1.0
+    time_offset = 0.0
+    
     # Interpolate the new time array
     for i in range(len(sorted_stretch_points) - 1):
         start_time, (new_start_time, _) = sorted_stretch_points[i]
         end_time, (new_end_time, _) = sorted_stretch_points[i + 1]
         
+        # Calculate the stretch factor for this segment
+        segment_duration = end_time - start_time
+        new_segment_duration = new_end_time - new_start_time
+        stretch_factor = new_segment_duration / segment_duration
+        
+        # Apply the stretch to this segment
         mask = (time >= start_time) & (time < end_time)
-        new_time[mask] = np.interp(time[mask], [start_time, end_time], [new_start_time, new_end_time])
+        segment_time = time[mask] - start_time
+        new_time[mask] = time_offset + (segment_time * stretch_factor * cumulative_stretch)
+        
+        # Update cumulative stretch and time offset
+        time_offset = new_time[mask][-1] if np.any(mask) else time_offset
+        cumulative_stretch *= stretch_factor
     
     # Handle the last segment
     last_start_time, (last_new_start_time, _) = sorted_stretch_points[-1]
     mask = time >= last_start_time
-    new_time[mask] = np.interp(time[mask], [last_start_time, time[-1]], [last_new_start_time, new_time[-1]])
+    segment_time = time[mask] - last_start_time
+    new_time[mask] = time_offset + (segment_time * cumulative_stretch)
     
-    # Calculate the new sample rate
+    # Perform the time stretching using librosa
+    y_retimed = librosa.effects.time_stretch(y, rate=len(time)/len(new_time))
+    
+    # Resample to match the new timing
     target_sr = sr * (len(new_time) / len(time))
-    
-    # Perform the time stretching using resample
-    y_retimed = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
+    y_retimed = librosa.resample(y_retimed, orig_sr=sr, target_sr=target_sr)
     
     # Ensure the output duration matches the MIDI duration
     target_duration = sorted_stretch_points[-1][1][0]  # Last MIDI time
