@@ -3,7 +3,6 @@ import json
 import numpy as np
 import soundfile as sf
 import librosa
-import pyrubberband as pyrb
 from scipy.interpolate import interp1d
 
 def load_timing_dict(piano_json, orchestra_json):
@@ -40,7 +39,7 @@ def stretch_audio(y, sr, stretches):
         if factor == 1.0:
             stretched_segment = segment
         else:
-            stretched_segment = pyrb.time_stretch(segment, sr, factor)
+            stretched_segment = librosa.effects.time_stretch(segment, rate=factor)
         stretched_audio.append(stretched_segment)
     return np.concatenate(stretched_audio)
 
