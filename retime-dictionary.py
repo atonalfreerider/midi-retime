@@ -42,26 +42,40 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     # Find the total duration of the MIDI file in ticks
     total_duration_ticks = max(msg[0] for msg in all_messages)
 
+    last_measure_ticks = 0
     for total_ticks, msg in all_messages:
         if msg.type == 'set_tempo':
             tempo = msg.tempo
         elif msg.type == 'time_signature':
+            old_time_signature = time_signature
             time_signature = (msg.numerator, msg.denominator)
+            old_ticks_per_measure = ticks_per_measure
             ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
+            # Adjust the current measure based on the time signature change
+            measure_progress = (total_ticks - last_measure_ticks) / old_ticks_per_measure
+            current_measure += int(measure_progress)
+            last_measure_ticks = total_ticks
 
         # Calculate the current measure
-        current_measure = 1 + total_ticks // ticks_per_measure
+        measure_progress = (total_ticks - last_measure_ticks) / ticks_per_measure
+        while measure_progress >= 1:
+            current_measure += 1
+            last_measure_ticks += ticks_per_measure
+            measure_progress -= 1
 
         # Convert ticks to seconds
-        seconds = (total_ticks / total_duration_ticks) * total_duration_seconds
+        seconds = mido.tick2second(total_ticks, ticks_per_beat, tempo)
 
         # Update midi_timings if this is a new measure or later timing for the same measure
         if current_measure not in midi_timings or seconds > midi_timings[current_measure]:
             midi_timings[current_measure] = seconds
 
     # Ensure we capture the last measure and the total duration
-    last_measure = 1 + total_duration_ticks // ticks_per_measure
-    midi_timings[last_measure] = total_duration_seconds
+    total_duration_seconds = mido.tick2second(total_duration_ticks, ticks_per_beat, tempo)
+    last_measure = max(midi_timings.keys())
+    if total_duration_seconds > midi_timings[last_measure]:
+        last_measure += 1
+        midi_timings[last_measure] = total_duration_seconds
 
     return midi_timings
 
