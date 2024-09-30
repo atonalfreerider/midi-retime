@@ -40,6 +40,7 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     current_measure = 1
     midi_timings = {}
     first_note_on_time = None
+    pending_time_signature = None
 
     for total_ticks, msg in all_messages:
         delta_ticks = total_ticks - cumulative_ticks
@@ -53,8 +54,7 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
         if msg.type == 'set_tempo':
             tempo = msg.tempo
         elif msg.type == 'time_signature':
-            time_signature = (msg.numerator, msg.denominator)
-            ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
+            pending_time_signature = (msg.numerator, msg.denominator)
 
         # Check if we've crossed a measure boundary
         while cumulative_ticks - measure_start_ticks >= ticks_per_measure:
@@ -62,6 +62,12 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
             measure_start_time = cumulative_time - delta_time + mido.tick2second(measure_start_ticks - (cumulative_ticks - delta_ticks), ticks_per_beat, tempo)
             midi_timings[current_measure] = measure_start_time
             current_measure += 1
+
+            # Apply pending time signature change at the start of the new measure
+            if pending_time_signature:
+                time_signature = pending_time_signature
+                ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
+                pending_time_signature = None
 
     # Adjust timings so that measure 1 starts at 0 seconds
     time_offset = midi_timings[1] if 1 in midi_timings else (first_note_on_time or 0)
