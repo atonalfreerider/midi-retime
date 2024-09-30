@@ -42,6 +42,13 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     measure_start_ticks = 0
 
     for event_ticks, msg in events:
+        # Check if we've reached or passed a measure boundary
+        while current_ticks - measure_start_ticks >= ticks_per_measure:
+            current_measure += 1
+            measure_start_time = current_time + ((measure_start_ticks + ticks_per_measure - current_ticks) * tempo) / (1000000 * ticks_per_beat)
+            midi_timings[current_measure] = measure_start_time
+            measure_start_ticks += ticks_per_measure
+
         # Process tempo and time signature changes
         if msg.type == 'set_tempo':
             # Calculate time up to this tempo change
@@ -50,15 +57,22 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
             current_ticks = event_ticks
             tempo = msg.tempo
         elif msg.type == 'time_signature':
+            # Calculate time up to this time signature change
+            delta_ticks = event_ticks - current_ticks
+            current_time += (delta_ticks * tempo) / (1000000 * ticks_per_beat)
+            current_ticks = event_ticks
+            
+            # Update time signature and ticks per measure
             time_signature = (msg.numerator, msg.denominator)
-            ticks_per_measure = ticks_per_beat * 4 * time_signature[0] // time_signature[1]
+            ticks_per_measure = ticks_per_beat * 4 * msg.numerator // msg.denominator
+            
+            # Reset measure_start_ticks to current_ticks
+            measure_start_ticks = current_ticks
 
-        # Check if we've reached or passed a measure boundary
-        while current_ticks - measure_start_ticks >= ticks_per_measure:
-            current_measure += 1
-            measure_start_time = current_time + ((measure_start_ticks + ticks_per_measure - current_ticks) * tempo) / (1000000 * ticks_per_beat)
-            midi_timings[current_measure] = measure_start_time
-            measure_start_ticks += ticks_per_measure
+            # Increment the measure and set the time in midi_timings
+            if current_measure > 1:
+                current_measure += 1
+                midi_timings[current_measure] = current_time
 
         # Update current time
         if current_ticks < event_ticks:
