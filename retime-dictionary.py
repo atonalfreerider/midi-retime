@@ -24,18 +24,20 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     time_signature = (4, 4)  # Default time signature
     ticks_per_measure = ticks_per_beat * time_signature[0]
 
-    # Merge set_tempo and time_signature messages across tracks
+    # Collect set_tempo and time_signature messages across all tracks
     tempo_time_sig_events = []
     for track in midi.tracks:
+        absolute_tick = 0
         for msg in track:
+            absolute_tick += msg.time
             if msg.type in ['set_tempo', 'time_signature']:
-                tempo_time_sig_events.append((msg.time, msg))
-    
-    # Sort events by their time
-    tempo_time_sig_events.sort(key=lambda x: x[0])
+                tempo_time_sig_events.append((absolute_tick, msg))
 
-    midi_timings = {}
-    current_measure = 1
+    # Sort events by their absolute tick count
+    tempo_time_sig_events.sort(key=lambda x: x[0])    
+
+    midi_timings = {1: 0.0}  # Measure 1 always starts at t=0
+    current_measure = 2  # Start from measure 2
     current_time = 0.0
     current_ticks = 0
 
@@ -48,16 +50,16 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
 
         # Process all other MIDI messages up to this point
         while current_ticks < event_time:
-            if current_ticks + 1 >= ticks_per_measure:
+            if current_ticks >= ticks_per_measure:
                 # Calculate and store the start time for the current measure
                 midi_timings[current_measure] = current_time
 
                 # Calculate time to the next measure
-                remaining_ticks = ticks_per_measure - current_ticks
+                remaining_ticks = ticks_per_measure - (current_ticks % ticks_per_measure)
                 next_measure_time = current_time + (remaining_ticks * tempo) / (1000000 * ticks_per_beat)
 
                 current_measure += 1
-                current_ticks = 0  # Reset current_ticks to 0
+                current_ticks += remaining_ticks
                 current_time = next_measure_time
             else:
                 # Update current time and ticks
@@ -67,21 +69,21 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
 
     # Process any remaining ticks after the last tempo/time signature event
     while current_ticks < midi.length:
-        if current_ticks + 1 >= ticks_per_measure:
+        if current_ticks >= ticks_per_measure:
             midi_timings[current_measure] = current_time
-            remaining_ticks = ticks_per_measure - current_ticks
+            remaining_ticks = ticks_per_measure - (current_ticks % ticks_per_measure)
             next_measure_time = current_time + (remaining_ticks * tempo) / (1000000 * ticks_per_beat)
             current_measure += 1
-            current_ticks = 0  # Reset current_ticks to 0
+            current_ticks += remaining_ticks
             current_time = next_measure_time
         else:
             seconds_per_tick = tempo / (1000000 * ticks_per_beat)
             current_time += seconds_per_tick
             current_ticks += 1
 
-    # Add the last measure if it's not already included
-    if current_measure not in midi_timings:
-        midi_timings[current_measure] = current_time
+    # Remove the last measure if it's incomplete
+    if current_measure in midi_timings and current_ticks % ticks_per_measure != 0:
+        del midi_timings[current_measure]
 
     return midi_timings
 
