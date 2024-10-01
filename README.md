@@ -15,6 +15,10 @@ The midi file that will be retimed, may not necessarily have the same note struc
 
 The tool is flexible in that it can retime a MIDI file to match the tempo of another MIDI file, even if the two MIDI files have different note structure. 
 
+retetime-dictionary.py takes a .txt file dictionary that indicates the start time of each measure in the audio file to be retimed, and outputs a corse retime scale.
+midi-note-analysis.py further takes the retime scale and subdivides the midi notes so that it can maximize overlap and minimize non-overlap, and produces a fine grain retime scale.
+audio-stretch.py takes the retime scale and retimes the audio file to match the tempo of the master midi file.
+
 Installation:
 
 pip install -r requirements.txt
