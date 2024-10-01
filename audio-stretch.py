@@ -3,77 +3,89 @@ import json
 import numpy as np
 import soundfile as sf
 import librosa
-from scipy.interpolate import interp1d
+from scipy import interpolate
+from typing import Dict, Tuple
 
-def load_timing_dict(piano_json, orchestra_json):
-    with open(piano_json, 'r') as f:
-        piano_dict = json.load(f)
-    with open(orchestra_json, 'r') as f:
-        orchestra_dict = json.load(f)
-    return piano_dict, orchestra_dict
+def retime_audio(input_audio: str, stretching_map: Dict[str, Tuple[float, float]], output_wav: str):
+    # Load the audio file
+    y, sr = librosa.load(input_audio, sr=None)
+    
+    # Create time array
+    time = np.arange(len(y)) / sr
+    
+    # Sort the stretching map by original time
+    sorted_stretch_points = sorted(stretching_map.items(), key=lambda x: float(x[0]))
+    
+    # Separate the original and new time points
+    orig_times, new_times = zip(*sorted_stretch_points)
+    orig_times = np.array([float(t) for t in orig_times])
+    new_times = np.array([nt[0] for nt in new_times])  # Extract just the time value, not the tuple
+    
+    # Create a piecewise linear interpolation function
+    time_map = interpolate.interp1d(orig_times, new_times, kind='linear', bounds_error=False, fill_value='extrapolate')
+    
+    # Apply the time mapping to all sample times
+    new_time = time_map(time)
+    
+    # Calculate the instantaneous stretch factor for each sample
+    stretch_factors = np.diff(new_time) / np.diff(time)
+    stretch_factors = np.insert(stretch_factors, 0, stretch_factors[0])  # Pad the first element
+    
+    # Initialize the output audio array
+    y_retimed = np.zeros(int(new_time[-1] * sr))
+    
+    # Perform the time stretching using a phase vocoder
+    for i in range(len(sorted_stretch_points) - 1):
+        start_time, (new_start_time, _) = sorted_stretch_points[i]
+        end_time, (new_end_time, _) = sorted_stretch_points[i + 1]
+        
+        # Convert string times to float
+        start_time, end_time = float(start_time), float(end_time)
+        
+        # Extract the segment
+        segment_mask = (time >= start_time) & (time < end_time)
+        segment = y[segment_mask]
+        
+        # Calculate the average stretch factor for this segment
+        avg_stretch = (new_end_time - new_start_time) / (end_time - start_time)
+        
+        # Time-stretch the segment
+        stretched_segment = librosa.effects.time_stretch(segment, rate=1/avg_stretch)
+        
+        # Calculate the new start and end indices
+        new_start_idx = int(new_start_time * sr)
+        new_end_idx = int(new_end_time * sr)
+        
+        # Ensure the stretched segment fits exactly in the allocated space
+        stretched_segment = librosa.util.fix_length(stretched_segment, size=new_end_idx - new_start_idx)
+        
+        # Insert the stretched segment into the output array
+        y_retimed[new_start_idx:new_end_idx] = stretched_segment
+    
+    # Handle the last segment
+    last_start_time, (last_new_start_time, _) = sorted_stretch_points[-1]
+    last_start_time = float(last_start_time)
+    last_segment = y[time >= last_start_time]
+    last_stretch = (new_time[-1] - last_new_start_time) / (time[-1] - last_start_time)
+    stretched_last_segment = librosa.effects.time_stretch(last_segment, rate=1/last_stretch)
+    
+    last_start_idx = int(last_new_start_time * sr)
+    y_retimed[last_start_idx:] = librosa.util.fix_length(stretched_last_segment, size=len(y_retimed) - last_start_idx)
+    
+    # Save the retimed audio
+    sf.write(output_wav, y_retimed, sr)
 
-def combine_timing_dicts(dict1, dict2):
-    combined = {}
-    keys = sorted(set(dict1.keys()).union(dict2.keys()), key=lambda x: float(x))
-    for key in keys:
-        speed1 = float(dict1.get(str(key), 1.0))
-        speed2 = float(dict2.get(str(key), 1.0))
-        combined[float(key)] = (speed1 + speed2) / 2
-    return combined
-
-def interpolate_timing(combined_dict, total_duration):
-    keys = sorted(combined_dict.keys())
-    times = np.array(keys)
-    speeds = np.array([combined_dict[k] for k in keys])
-    interp_func = interp1d(times, speeds, kind='linear', fill_value="extrapolate")
-    return interp_func
-
-def stretch_audio(y, sr, stretches):
-    stretched_audio = []
-    for start, end, factor in stretches:
-        start_sample = int(start * sr)
-        end_sample = int(end * sr)
-        segment = y[start_sample:end_sample]
-        # Ensure factor is within a reasonable range to prevent extreme stretching
-        factor = max(0.5, min(factor, 2.0))
-        if factor == 1.0:
-            stretched_segment = segment
-        else:
-            stretched_segment = librosa.effects.time_stretch(segment, rate=factor)
-        stretched_audio.append(stretched_segment)
-    return np.concatenate(stretched_audio)
-
-def main(mp3_path, piano_json, orchestra_json, output_wav):
-    piano_dict, orchestra_dict = load_timing_dict(piano_json, orchestra_json)
-    combined_dict = combine_timing_dicts(piano_dict, orchestra_dict)
-    
-    y, sr = librosa.load(mp3_path, sr=None)
-    total_duration = librosa.get_duration(y=y, sr=sr)
-    
-    interp_func = interpolate_timing(combined_dict, total_duration)
-    
-    # Create stretches list with overlapping segments to ensure smooth transitions
-    stretches = []
-    step = 0.1  # 100ms segments
-    window = 0.2  # 200ms window for overlap
-    for i in np.arange(0, total_duration, step):
-        start = i
-        end = min(i + window, total_duration)
-        speed = interp_func(i)
-        factor = speed
-        stretches.append((start, end, factor))
-    
-    warped_audio = stretch_audio(y, sr, stretches)
-    
-    sf.write(output_wav, warped_audio, sr)
-    print(f"Retimed audio saved to {output_wav}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Retime MP3 based on timing dictionaries.')
-    parser.add_argument('mp3_file', help='Path to the input MP3 file')
-    parser.add_argument('piano_json', help='Path to the piano timing JSON file')
-    parser.add_argument('orchestra_json', help='Path to the orchestra timing JSON file')
+    parser = argparse.ArgumentParser(description='Retime audio based on timing scale.')
+    parser.add_argument('audio_file', help='Path to the input MP3 or WAV file')
+    parser.add_argument('timing_scale', help='Path to the timing scale file')
     parser.add_argument('output_wav', help='Path to the output WAV file')
     
     args = parser.parse_args()
-    main(args.mp3_file, args.piano_json, args.orchestra_json, args.output_wav)
+
+    with open(args.timing_scale, 'r') as f:
+        timing_scale = json.load(f)
+
+    retime_audio(args.audio_file, timing_scale, args.output_wav)
+    print(f"Retimed audio saved to {args.output_wav}")

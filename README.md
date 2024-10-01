@@ -39,4 +39,37 @@ Convert audio to midi using:
 https://github.com/spotify/basic-pitch
 
 
+example launch.json for vscode:
+```
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: MIDI Dictionary",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/retime-dictionary.py",
+            "args": [                
+                "/home/john/Desktop/Piano/Rach-3/I/Piano_Concerto_3_First.mid",
+                "/home/john/Desktop/Piano/Rach-3/Ohlsson/Ohlsson-Rach3-1-measure-timing.txt",
+                "/home/john/Desktop/Piano/Rach-3/Ohlsson/rach3-1-retime.json"
 
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: MIDI Stretch",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/audio-stretch.py",
+            "args": [
+                "/home/john/Desktop/Piano/Rach-3/Ohlsson/01 - Sergey Vassilievich Rachmaninoff Piano Concerto_no_piano_split_by_lalalai.wav",
+                "/home/john/Desktop/Piano/Rach-3/Ohlsson/rach3-1-retime.json",
+                "/home/john/Desktop/Piano/Rach-3/Ohlsson/rach3-1-retime.wav"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}
+
+```

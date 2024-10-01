@@ -1,10 +1,7 @@
 import argparse
-import numpy as np
-import librosa
-import soundfile as sf
+import json
 import mido
 from typing import Dict, Tuple
-from scipy import interpolate
 
 def parse_timing_dict(timing_file: str) -> Dict[int, float]:
     timing_dict = {}
@@ -17,6 +14,7 @@ def parse_timing_dict(timing_file: str) -> Dict[int, float]:
             time_in_seconds = (int(minutes) * 60) + int(seconds) + (int(milliseconds) / 1000)
             timing_dict[measure] = time_in_seconds
     return timing_dict
+
 
 def get_midi_timings(midi_file: str) -> Dict[int, float]:
     midi = mido.MidiFile(midi_file)
@@ -90,6 +88,7 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
 
     return midi_timings
 
+
 def create_stretching_map(wav_timings: Dict[int, float], midi_timings: Dict[int, float]) -> Dict[float, Tuple[float, float]]:
     stretching_map = {}
     wav_measures = sorted(wav_timings.keys())
@@ -112,92 +111,25 @@ def create_stretching_map(wav_timings: Dict[int, float], midi_timings: Dict[int,
     return stretching_map
 
 
-def retime_audio(input_wav: str, stretching_map: Dict[float, Tuple[float, float]], output_wav: str):
-    # Load the audio file
-    y, sr = librosa.load(input_wav, sr=None)
-    
-    # Create time array
-    time = np.arange(len(y)) / sr
-    
-    # Sort the stretching map by original time
-    sorted_stretch_points = sorted(stretching_map.items())
-    
-    # Separate the original and new time points
-    orig_times, new_times = zip(*sorted_stretch_points)
-    new_times = [nt[0] for nt in new_times]  # Extract just the time value, not the tuple
-    
-    # Create a piecewise linear interpolation function
-    time_map = interpolate.interp1d(orig_times, new_times, kind='linear', bounds_error=False, fill_value='extrapolate')
-    
-    # Apply the time mapping to all sample times
-    new_time = time_map(time)
-    
-    # Calculate the instantaneous stretch factor for each sample
-    stretch_factors = np.diff(new_time) / np.diff(time)
-    stretch_factors = np.insert(stretch_factors, 0, stretch_factors[0])  # Pad the first element
-    
-    # Initialize the output audio array
-    y_retimed = np.zeros(int(new_time[-1] * sr))
-    
-    # Perform the time stretching using a phase vocoder
-    for i in range(len(sorted_stretch_points) - 1):
-        start_time, (new_start_time, _) = sorted_stretch_points[i]
-        end_time, (new_end_time, _) = sorted_stretch_points[i + 1]
-        
-        # Extract the segment
-        segment_mask = (time >= start_time) & (time < end_time)
-        segment = y[segment_mask]
-        
-        # Calculate the average stretch factor for this segment
-        avg_stretch = (new_end_time - new_start_time) / (end_time - start_time)
-        
-        # Time-stretch the segment
-        stretched_segment = librosa.effects.time_stretch(segment, rate=1/avg_stretch)
-        
-        # Calculate the new start and end indices
-        new_start_idx = int(new_start_time * sr)
-        new_end_idx = int(new_end_time * sr)
-        
-        # Ensure the stretched segment fits exactly in the allocated space
-        stretched_segment = librosa.util.fix_length(stretched_segment, size=new_end_idx - new_start_idx)
-        
-        # Insert the stretched segment into the output array
-        y_retimed[new_start_idx:new_end_idx] = stretched_segment
-    
-    # Handle the last segment
-    last_start_time, (last_new_start_time, _) = sorted_stretch_points[-1]
-    last_segment = y[time >= last_start_time]
-    last_stretch = (new_time[-1] - last_new_start_time) / (time[-1] - last_start_time)
-    stretched_last_segment = librosa.effects.time_stretch(last_segment, rate=1/last_stretch)
-    
-    last_start_idx = int(last_new_start_time * sr)
-    y_retimed[last_start_idx:] = librosa.util.fix_length(stretched_last_segment, size=len(y_retimed) - last_start_idx)
-    
-    # Save the retimed audio
-    sf.write(output_wav, y_retimed, sr)
-
 def main():
-    parser = argparse.ArgumentParser(description="Retime a WAV file based on MIDI timing.")
-    parser.add_argument("input_wav", help="Path to input WAV file")
+    parser = argparse.ArgumentParser(description="Apply a stretching map to an audio file.")    
     parser.add_argument("midi_file", help="Path to MIDI master timing file")
     parser.add_argument("timing_file", help="Path to timing dictionary text file")
-    parser.add_argument("output_wav", help="Path to output retimed WAV file")
+    parser.add_argument("output_json", help="Path to output stretching map json file")
     args = parser.parse_args()
 
-    wav_timings = parse_timing_dict(args.timing_file)
+    audio_timings = parse_timing_dict(args.timing_file)
     midi_timings = get_midi_timings(args.midi_file)
     
-    if not wav_timings or not midi_timings:
+    if not audio_timings or not midi_timings:
         print("Error: Empty timing information. Please check your input files.")
         return
 
-    stretching_map = create_stretching_map(wav_timings, midi_timings)
-    
-    if not stretching_map:
-        print("Error: Could not create stretching map. Please check if WAV and MIDI timings are compatible.")
-        return
+    stretching_map = create_stretching_map(audio_timings, midi_timings)
+        
+    with open(args.output_json, 'w') as f:
+        json.dump(stretching_map, f, indent=4)
 
-    retime_audio(args.input_wav, stretching_map, args.output_wav)
 
 if __name__ == "__main__":
     main()
