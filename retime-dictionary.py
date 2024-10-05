@@ -34,57 +34,43 @@ def get_midi_timings(midi_file: str) -> Dict[int, float]:
     # Sort events by their absolute tick count
     events.sort(key=lambda x: x[0])
 
-    midi_timings = {1: 0.0}  # Measure 1 always starts at t=0
+    midi_timings = {1: 0.0}  # Measure 1 starts at t=0
     current_measure = 1
     current_time = 0.0
     current_ticks = 0
     measure_start_ticks = 0
+    next_measure_ticks = ticks_per_measure
 
     for event_ticks, msg in events:
-        # Check if we've reached or passed a measure boundary
-        while current_ticks - measure_start_ticks >= ticks_per_measure:
+        # Calculate time up to this event
+        delta_ticks = event_ticks - current_ticks
+        current_time += (delta_ticks * tempo) / (1000000 * ticks_per_beat)
+        current_ticks = event_ticks
+
+        # Check if we've reached or passed measure boundaries
+        while current_ticks >= next_measure_ticks:
             current_measure += 1
-            measure_start_time = current_time + ((measure_start_ticks + ticks_per_measure - current_ticks) * tempo) / (1000000 * ticks_per_beat)
+            measure_start_time = current_time - ((current_ticks - next_measure_ticks) * tempo) / (1000000 * ticks_per_beat)
             midi_timings[current_measure] = measure_start_time
-            measure_start_ticks += ticks_per_measure
+            measure_start_ticks = next_measure_ticks
+            next_measure_ticks += ticks_per_measure
 
         # Process tempo and time signature changes
         if msg.type == 'set_tempo':
-            # Calculate time up to this tempo change
-            delta_ticks = event_ticks - current_ticks
-            current_time += (delta_ticks * tempo) / (1000000 * ticks_per_beat)
-            current_ticks = event_ticks
             tempo = msg.tempo
         elif msg.type == 'time_signature':
-            # Calculate time up to this time signature change
-            delta_ticks = event_ticks - current_ticks
-            current_time += (delta_ticks * tempo) / (1000000 * ticks_per_beat)
-            current_ticks = event_ticks
-            
             # Update time signature and ticks per measure
-            time_signature = (msg.numerator, msg.denominator)
             ticks_per_measure = ticks_per_beat * 4 * msg.numerator // msg.denominator
             
-            # Reset measure_start_ticks to current_ticks
-            measure_start_ticks = current_ticks
-
-            # Increment the measure and set the time in midi_timings
-            if current_measure > 1:
-                current_measure += 1
-                midi_timings[current_measure] = current_time
-
-        # Update current time
-        if current_ticks < event_ticks:
-            delta_ticks = event_ticks - current_ticks
-            current_time += (delta_ticks * tempo) / (1000000 * ticks_per_beat)
-            current_ticks = event_ticks
+            # Adjust the next measure boundary
+            next_measure_ticks = measure_start_ticks + ticks_per_measure
 
     # Process any remaining ticks after the last event
-    while current_ticks - measure_start_ticks >= ticks_per_measure:
+    while current_ticks >= next_measure_ticks:
         current_measure += 1
-        measure_start_time = current_time + ((measure_start_ticks + ticks_per_measure - current_ticks) * tempo) / (1000000 * ticks_per_beat)
+        measure_start_time = current_time + ((next_measure_ticks - current_ticks) * tempo) / (1000000 * ticks_per_beat)
         midi_timings[current_measure] = measure_start_time
-        measure_start_ticks += ticks_per_measure
+        next_measure_ticks += ticks_per_measure
 
     return midi_timings
 
