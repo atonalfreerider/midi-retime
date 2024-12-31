@@ -27,10 +27,6 @@ def retime_audio(input_audio: str, stretching_map: Dict[str, Tuple[float, float]
     # Apply the time mapping to all sample times
     new_time = time_map(time)
     
-    # Calculate the instantaneous stretch factor for each sample
-    stretch_factors = np.diff(new_time) / np.diff(time)
-    stretch_factors = np.insert(stretch_factors, 0, stretch_factors[0])  # Pad the first element
-    
     # Initialize the output audio array
     y_retimed = np.zeros(int(new_time[-1] * sr))
     
