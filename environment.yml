@@ -1,0 +1,14 @@
+name: midi-retime
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - python=3.12
+  - pip:
+    - mido
+    - pydub
+    - scipy
+    - librosa
+    - numpy
+    - soundfile
