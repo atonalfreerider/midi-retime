@@ -90,17 +90,23 @@ for timing in "${TIMING_FILES[@]}"; do
   echo "Processing timing file: $timing"
   echo "  Timing base: $timing_base"
 
-  # find audio file in same dir (prefer no_piano variants, support mp3/wav/flac)
+  # find audio file in same dir (support mp3/wav/flac) and prefer "no_piano" variants
   audio_file=""
-  # search for no_piano variants first (any audio format)
-  audio_file_candidate=$(find "$timing_dir" -maxdepth 1 -iname '*no*piano*.mp3' -o -iname '*no*piano*.wav' -o -iname '*no*piano*.flac' 2>/dev/null | head -n1 || true)
-  if [[ -n "$audio_file_candidate" ]]; then
-    audio_file="$audio_file_candidate"
-  else
-    # fallback: find any audio file
-    audio_file_candidate=$(find "$timing_dir" -maxdepth 1 \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.flac' \) 2>/dev/null | head -n1 || true)
-    if [[ -n "$audio_file_candidate" ]]; then
-      audio_file="$audio_file_candidate"
+  mapfile -t AUDIO_CANDIDATES < <(find "$timing_dir" -maxdepth 1 -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.flac' \) 2>/dev/null | sort)
+
+  if [[ ${#AUDIO_CANDIDATES[@]} -gt 0 ]]; then
+    # Prefer filenames containing variants of "no piano"
+    for a in "${AUDIO_CANDIDATES[@]}"; do
+      name_lc=$(basename "$a" | tr '[:upper:]' '[:lower:]')
+      if [[ "$name_lc" == *"no_piano"* || "$name_lc" == *"no-piano"* || "$name_lc" == *"nopiano"* || "$name_lc" == *"no piano"* || "$name_lc" == *"no_piano_split"* || "$name_lc" == *"no_piano_split_by_lalalai"* ]]; then
+        audio_file="$a"
+        break
+      fi
+    done
+
+    # If none matched the no_piano pattern, take the first available audio file
+    if [[ -z "$audio_file" ]]; then
+      audio_file="${AUDIO_CANDIDATES[0]}"
     fi
   fi
 
@@ -205,6 +211,15 @@ for timing in "${TIMING_FILES[@]}"; do
   if [[ -n "$audio_file" ]]; then
     cmd2="python3 ./audio-stretch.py \"$audio_file\" \"$out_json\" \"$out_wav\""
     run_cmd "$cmd2"
+
+    # Transcode output WAV to MP3 (keep WAV). Requires ffmpeg.
+    out_mp3="$RETIMES_DIR/${timing_slug}-retime.mp3"
+    if command -v ffmpeg >/dev/null 2>&1; then
+      cmd3="ffmpeg -y -i \"$out_wav\" -codec:a libmp3lame -qscale:a 2 \"$out_mp3\""
+      run_cmd "$cmd3"
+    else
+      echo "Warning: ffmpeg not found - skipping MP3 render for $out_wav"
+    fi
   fi
 
 done
