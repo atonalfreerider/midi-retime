@@ -23,6 +23,7 @@ MUSIC_DIR=""
 MUSESCORE_DIR=""
 RETIMES_DIR="$(pwd)/retimes"
 DRY_RUN=0
+KEEP_TEMP=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --musescore-dir) MUSESCORE_DIR="$2"; shift 2;;
     --retimes-dir) RETIMES_DIR="$2"; shift 2;;
     --dry-run) DRY_RUN=1; shift;;
+    --keep-temp) KEEP_TEMP=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown arg: $1"; usage; exit 1;;
   esac
@@ -212,13 +214,119 @@ for timing in "${TIMING_FILES[@]}"; do
     cmd2="python3 ./audio-stretch.py \"$audio_file\" \"$out_json\" \"$out_wav\""
     run_cmd "$cmd2"
 
-    # Transcode output WAV to MP3 (keep WAV). Requires ffmpeg.
-    out_mp3="$RETIMES_DIR/${timing_slug}-retime.mp3"
+    # If audio-stretch wrote output to a different location, try to locate it.
+    if [[ ! -f "$out_wav" ]]; then
+      found=$(find "$MUSIC_DIR" -type f -iname "${timing_slug}-retime.wav" 2>/dev/null | head -1 || true)
+      if [[ -n "$found" ]]; then
+        echo "Note: audio-stretch wrote output to $found; using that file for post-processing."
+        out_wav="$found"
+      else
+        echo "Warning: expected output $out_wav not found; skipping post-processing for $timing_slug"
+        continue
+      fi
+    fi
+
+    # Post-process WAV: prepend short blip and overlay a very low-amplitude ultrasonic sine
+    # This prevents Sonos from skipping long silent sections and provides an audible start blip.
+    out_wav_blip="$RETIMES_DIR/${timing_slug}-retime-blip.wav"
+    out_wav_final="$RETIMES_DIR/${timing_slug}-retime-final.wav"
+
     if command -v ffmpeg >/dev/null 2>&1; then
-      cmd3="ffmpeg -y -i \"$out_wav\" -codec:a libmp3lame -qscale:a 2 \"$out_mp3\""
-      run_cmd "$cmd3"
+      blip_tmp="$(mktemp --suffix=.wav)"
+      
+      # Get sample rate and channels of original WAV to avoid conversion issues
+      sr=$(ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of default=noprint_wrappers=1:nokey=1 "$out_wav" 2>/dev/null || echo 44100)
+      channels=$(ffprobe -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$out_wav" 2>/dev/null || echo 2)
+
+      if [[ $DRY_RUN -eq 1 ]]; then
+        echo "+ ffmpeg -y -f lavfi -i \"sine=frequency=3000:duration=0.05\" -af \"volume=0.7\" -ar $sr -ac $channels \"$blip_tmp\""
+        echo "+ ffmpeg -y -i \"$blip_tmp\" -i \"$out_wav\" -filter_complex \"[0:a][1:a]concat=n=2:v=0:a=1[out]\" -map \"[out]\" \"$out_wav_blip\""
+        echo "+ ffmpeg -y -f lavfi -i \"sine=frequency=17000:duration=<duration>\" -f lavfi -i \"sine=frequency=40:duration=<duration>\" -filter_complex \"...\" -ar $sr -ac $channels \"<ultra_tmp>\""
+        echo "+ ffmpeg -y -i \"$out_wav_blip\" -i \"<ultra_tmp>\" -filter_complex \"[0:a][1:a]amix=inputs=2:duration=first...\" -c:a pcm_s16le \"$out_wav_final\""
+      else
+        # create short audible blip
+        if ! ffmpeg -y -f lavfi -i "sine=frequency=3000:duration=0.05" -af "volume=0.7" -ar "$sr" -ac "$channels" "$blip_tmp" >/dev/null 2>&1; then
+          echo "Warning: ffmpeg failed to create blip. Skipping blip/ultrasonic processing for $out_wav"
+          if [[ $KEEP_TEMP -eq 0 ]]; then
+            rm -f "$blip_tmp"
+          fi
+          out_wav_final="$out_wav"
+        else
+          # ensure original WAV exists
+          if [[ ! -f "$out_wav" ]]; then
+            echo "Warning: original WAV $out_wav not found; skipping blip/ultrasonic processing."
+            if [[ $KEEP_TEMP -eq 0 ]]; then
+              rm -f "$blip_tmp"
+            fi
+            out_wav_final="$out_wav"
+          else
+            # concatenate blip + original
+            if ! ffmpeg -y -i "$blip_tmp" -i "$out_wav" -filter_complex "[0:a][1:a]concat=n=2:v=0:a=1[out]" -map "[out]" "$out_wav_blip" >/dev/null 2>&1; then
+              echo "Warning: ffmpeg failed to concatenate blip and audio. Using original WAV."
+              if [[ $KEEP_TEMP -eq 0 ]]; then
+                rm -f "$blip_tmp" "$out_wav_blip"
+              fi
+              out_wav_final="$out_wav"
+            else
+              if [[ $KEEP_TEMP -eq 0 ]]; then
+                rm -f "$blip_tmp"
+              fi
+              duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out_wav_blip" 2>/dev/null || echo 0)
+              if [[ -z "$duration" || "$duration" == "0" || "$duration" == "0.0" ]]; then
+                echo "Warning: concatenated file has zero duration; using blip-only output."
+                if cp "$out_wav_blip" "$out_wav_final" 2>/dev/null; then
+                  :
+                else
+                  out_wav_final="$out_wav_blip"
+                fi
+              else
+                ultra_tmp="$(mktemp --suffix=.wav)"
+                # Create a mix of 17kHz (low ultrasonic) and 40Hz (low tone) to keep speakers awake
+                if ! ffmpeg -y -f lavfi -i "sine=frequency=17000:duration=${duration}" -f lavfi -i "sine=frequency=40:duration=${duration}" -filter_complex "[0:a]volume=0.001[u];[1:a]volume=0.001[l];[u][l]amix=inputs=2:duration=first:dropout_transition=0[bg]" -ar "$sr" -ac "$channels" "$ultra_tmp" >/dev/null 2>&1; then
+                  echo "Warning: ffmpeg failed to create ultrasonic/low tone; producing blip-only output."
+                  out_wav_final="$out_wav_blip"
+                  if [[ $KEEP_TEMP -eq 0 ]]; then
+                    rm -f "$ultra_tmp"
+                  fi
+                else
+                  # Mix background tones with main audio. Use volume=2 to compensate for amix scaling.
+                  if ! ffmpeg -y -i "$out_wav_blip" -i "$ultra_tmp" -filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0,volume=2" -c:a pcm_s16le "$out_wav_final" >/dev/null 2>&1; then
+                    echo "Warning: ffmpeg failed to mix ultrasonic/low tone; using blip-only output."
+                    if cp "$out_wav_blip" "$out_wav_final" 2>/dev/null; then
+                      :
+                    else
+                      out_wav_final="$out_wav_blip"
+                    fi
+                  else
+                    # success: out_wav_final was produced
+                    :
+                  fi
+                  if [[ $KEEP_TEMP -eq 0 ]]; then
+                    rm -f "$ultra_tmp" "$out_wav_blip"
+                  fi
+                fi
+              fi
+            fi
+          fi
+        fi
+      fi
+
+      # Transcode final WAV to MP3 (keep WAV). Use high-quality VBR
+      out_mp3="$RETIMES_DIR/${timing_slug}-retime.mp3"
+      if [[ $DRY_RUN -eq 1 ]]; then
+        echo "+ ffmpeg -y -i \"$out_wav_final\" -codec:a libmp3lame -qscale:a 2 \"$out_mp3\""
+      else
+        if [[ -n "$out_wav_final" && -f "$out_wav_final" ]]; then
+          if ! ffmpeg -y -i "$out_wav_final" -codec:a libmp3lame -qscale:a 2 "$out_mp3" >/dev/null 2>&1; then
+            echo "Warning: ffmpeg failed to render MP3 for $out_wav_final"
+          fi
+        else
+          echo "Warning: final WAV not available; skipping MP3 render for $timing_slug"
+        fi
+      fi
     else
-      echo "Warning: ffmpeg not found - skipping MP3 render for $out_wav"
+      echo "Warning: ffmpeg not found - skipping blip/ultrasonic processing and MP3 render for $out_wav"
+      out_wav_final="$out_wav"
     fi
   fi
 
