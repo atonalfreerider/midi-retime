@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eu
 
 usage() {
   cat <<EOF
@@ -86,16 +86,19 @@ for timing in "${TIMING_FILES[@]}"; do
   timing_key=$(echo "$timing_base" | sed 's/[- ]/ /g')
   timing_slug=$(echo "$timing_base" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
 
-  echo "\nProcessing timing file: $timing"
+  echo ""
+  echo "Processing timing file: $timing"
+  echo "  Timing base: $timing_base"
 
-  # find audio file in same dir (prefer no_piano variants)
+  # find audio file in same dir (prefer no_piano variants, support mp3/wav/flac)
   audio_file=""
-  # search for no_piano variants first
-  audio_file_candidate=$(ls "$timing_dir"/*no*piano*.wav 2>/dev/null | head -n1 || true)
+  # search for no_piano variants first (any audio format)
+  audio_file_candidate=$(find "$timing_dir" -maxdepth 1 -iname '*no*piano*.mp3' -o -iname '*no*piano*.wav' -o -iname '*no*piano*.flac' 2>/dev/null | head -n1 || true)
   if [[ -n "$audio_file_candidate" ]]; then
     audio_file="$audio_file_candidate"
   else
-    audio_file_candidate=$(ls "$timing_dir"/*.wav 2>/dev/null | head -n1 || true)
+    # fallback: find any audio file
+    audio_file_candidate=$(find "$timing_dir" -maxdepth 1 \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.flac' \) 2>/dev/null | head -n1 || true)
     if [[ -n "$audio_file_candidate" ]]; then
       audio_file="$audio_file_candidate"
     fi
@@ -109,20 +112,67 @@ for timing in "${TIMING_FILES[@]}"; do
 
   # Attempt to match MIDI file in MUSESCORE_DIR
   midi_match=""
-  # create tokens (words >=4 chars) from timing_base
+  
+  # Extract composition number and movement from timing_base more carefully
+  # e.g., "Rach2-3-Bronfman" -> comp_num="2", movement="3"
+  # e.g., "Ohlsson-Rach3-1-measure" -> comp_num="3", movement="1"
+  comp_num=$(echo "$timing_base" | sed -E 's/.*[Rr]ach([23]).*/\1/')
+  movement=$(echo "$timing_base" | sed -E 's/.*[Rr]ach[23]-([123]).*/\1/')
+  
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "  comp_num: '$comp_num', movement: '$movement'"
+  fi
+  
+  # Create tokens from timing_base (words >=4 chars)
   read -ra TOKENS <<< "$(echo "$timing_base" | sed 's/[^a-zA-Z0-9]/ /g')"
-
-  while IFS= read -r midi; do
-    midi_base=$(basename "$midi")
-    midi_base_lc=$(echo "$midi_base" | tr '[:upper:]' '[:lower:]')
-    for token in "${TOKENS[@]}"; do
-      token_lc=$(echo "$token" | tr '[:upper:]' '[:lower:]')
-      if [[ ${#token_lc} -ge 4 && "$midi_base_lc" == *"$token_lc"* ]]; then
-        midi_match="$midi"
-        break 2
+  
+  # First pass: look for master.mid files with composition key, and match movement by folder
+  if [[ -n "$comp_num" ]]; then
+    # Build the movement folder name (1->I, 2->II, 3->III)
+    movement_folder=""
+    case "$movement" in
+      1) movement_folder="I" ;;
+      2) movement_folder="II" ;;
+      3) movement_folder="III" ;;
+    esac
+    
+    if [[ -n "$movement_folder" ]]; then
+      # Try to find any .mid file in the specific movement folder (prefer master.mid, but accept any .mid)
+      # Search for Rach-2 or Rach-3 folder
+      comp_dir=$(find "$MUSESCORE_DIR" -type d -iname "Rach-$comp_num" 2>/dev/null | head -1)
+      if [[ -n "$comp_dir" ]]; then
+        # First try master.mid
+        midi_match=$(ls -1 "$comp_dir/$movement_folder"/*master.mid 2>/dev/null | head -1)
+        # If no master.mid, accept any .mid file in that movement folder
+        if [[ -z "$midi_match" ]]; then
+          midi_match=$(ls -1 "$comp_dir/$movement_folder"/*.mid 2>/dev/null | head -1)
+        fi
       fi
-    done
-  done < <(find "$MUSESCORE_DIR" -type f \( -iname '*.mid' -o -iname '*.midi' \) 2>/dev/null)
+    fi
+    
+    # If no movement folder match, try any master.mid in the composition folder
+    if [[ -z "$midi_match" ]]; then
+      comp_dir=$(find "$MUSESCORE_DIR" -type d -iname "Rach-$comp_num" 2>/dev/null | head -1)
+      if [[ -n "$comp_dir" ]]; then
+        midi_match=$(find "$comp_dir" -name "*master.mid" 2>/dev/null | head -1)
+      fi
+    fi
+  fi
+  
+  # Second pass: token-based matching on all MIDI files (fallback)
+  if [[ -z "$midi_match" ]]; then
+    while IFS= read -r midi; do
+      midi_base=$(basename "$midi")
+      midi_base_lc=$(echo "$midi_base" | tr '[:upper:]' '[:lower:]')
+      for token in "${TOKENS[@]}"; do
+        token_lc=$(echo "$token" | tr '[:upper:]' '[:lower:]')
+        if [[ ${#token_lc} -ge 4 && "$midi_base_lc" == *"$token_lc"* ]]; then
+          midi_match="$midi"
+          break 2
+        fi
+      done
+    done < <(find "$MUSESCORE_DIR" -type f \( -iname '*.mid' -o -iname '*.midi' \) 2>/dev/null)
+  fi
 
   if [[ -z "$midi_match" ]]; then
     echo "No MIDI match found for timing $timing_base under $MUSESCORE_DIR. Skipping."
@@ -134,6 +184,18 @@ for timing in "${TIMING_FILES[@]}"; do
   # Build output paths
   out_json="$RETIMES_DIR/${timing_slug}-retime.json"
   out_wav="$RETIMES_DIR/${timing_slug}-retime.wav"
+
+  # Skip if output WAV exists and MIDI is not significantly newer (within 5 minutes)
+  if [[ -f "$out_wav" ]]; then
+    midi_mtime=$(stat -c %Y "$midi_match" 2>/dev/null || echo 0)
+    wav_mtime=$(stat -c %Y "$out_wav" 2>/dev/null || echo 0)
+    age_diff=$((midi_mtime - wav_mtime))
+    
+    if [[ $age_diff -lt 300 ]]; then
+      echo "Output WAV already exists and MIDI is not significantly newer. Skipping."
+      continue
+    fi
+  fi
 
   # Run retime-dictionary.py
   cmd1="python3 ./retime-dictionary.py \"$midi_match\" \"$timing\" \"$out_json\""

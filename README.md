@@ -34,6 +34,8 @@ sudo apt-get update
 sudo apt-get install rubberband-cli
 
 
+./retime_batch.sh --env midi-retime --music-dir /home/john/Music --musescore-dir /home/john/Documents/MuseScore4
+
 
 Convert audio to midi using:
 https://github.com/spotify/basic-pitch
